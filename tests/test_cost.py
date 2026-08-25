@@ -10,12 +10,13 @@ from cost_control.cost import (
 )
 
 
-def pricing_struct(user=None, multipliers=None):
+def pricing_struct(user=None, multipliers=None, provider_clusters=None):
     """构造 get_pricing 返回的定价结构（测试辅助）。"""
     return {
         "defaults": {m: dict(p) for m, p in DEFAULT_PRICING.items()},
         "user": user or {},
         "multipliers": multipliers or {},
+        "provider_clusters": provider_clusters or {},
     }
 
 
@@ -211,9 +212,12 @@ def test_compute_cost_applies_default_model_cluster_multiplier():
     usage = {"token_input_other": 1_000_000, "token_input_cached": 0, "token_output": 0}
     cost = compute_cost_value(
         usage,
-        None,
-        "openai/gpt-4o",
-        pricing_struct(multipliers={"openai": 1.5}),
+        "gpt-primary",
+        "gpt-4o",
+        pricing_struct(
+            multipliers={"source-main": 1.5},
+            provider_clusters={"gpt-primary": "source-main"},
+        ),
     )
     assert cost == 3.75
 
@@ -224,7 +228,7 @@ def test_compute_cost_applies_cluster_multiplier_after_user_override():
         {},
         "prov_x",
         "anthropic/claude-sonnet-4.5",
-        pricing_struct(user, {"anthropic": 2}),
+        pricing_struct(user, {"source-main": 2}, {"prov_x": "source-main"}),
     )
     assert cost == 0.04
 

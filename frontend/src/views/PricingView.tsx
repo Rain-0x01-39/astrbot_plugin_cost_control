@@ -6,7 +6,6 @@ import { fmtNum } from "../lib/format";
 import type {
   DeletedProviderInfo,
   MatchedDefault,
-  PriceEntry,
   PricingCluster,
   PricingUnpriced,
   ProviderModelInfo,
@@ -25,6 +24,15 @@ import {
   isDraftEmpty,
 } from "../components/ProviderPricingCard";
 
+interface PricingDisplayProvider {
+  id: string;
+  displayId: string;
+  type?: string;
+  candidates: string[];
+  matchedDefault: MatchedDefault | null;
+  isDeletedResidue?: boolean;
+}
+
 export function PricingView({ refreshNonce }: { refreshNonce: number }) {
   const res = useApi(() => api.getPricing(), [refreshNonce]);
   const data = res.data;
@@ -40,6 +48,7 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
   // 跳转信号：点击未定价告警行时递增，传给对应 provider 卡片触发脉冲动画
   const [highlightTarget, setHighlightTarget] = useState<string | null>(null);
   const [highlightSignal, setHighlightSignal] = useState(0);
+  const [selectedClusterId, setSelectedClusterId] = useState("");
   // 局部未定价告警覆盖：保存后单独刷新，避免整页 refetch 导致闪烁
   const [unpricedOverride, setUnpricedOverride] = useState<
     PricingUnpriced[] | null
@@ -54,9 +63,15 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     }
     setDrafts(next);
     const nextMultipliers: Record<string, string> = {};
+    const currentClusterIds = new Set(
+      (data.pricing_clusters || []).map((cluster) => cluster.id),
+    );
     for (const [clusterId, multiplier] of Object.entries(
       data.pricing_multipliers || {},
     )) {
+      if (currentClusterIds.size > 0 && !currentClusterIds.has(clusterId)) {
+        continue;
+      }
       nextMultipliers[clusterId] = String(multiplier);
     }
     setMultiplierDrafts(nextMultipliers);
@@ -65,14 +80,6 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
   }, [data]);
 
   const providerModels: ProviderModelInfo[] = data?.provider_models || [];
-  const defaults: Record<string, PriceEntry> = data?.defaults || {};
-  const pricingClusters = useMemo<PricingCluster[]>(() => {
-    if (data?.pricing_clusters?.length) return data.pricing_clusters;
-    const models = Object.keys(defaults).sort();
-    return models.length
-      ? [{ id: "other", name: "全部模型", models }]
-      : [];
-  }, [data?.pricing_clusters, defaults]);
   const unpriced = unpricedOverride ?? data?.unpriced ?? [];
 
   // 当前配置中的 provider ID 集合
@@ -119,30 +126,73 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     return i >= 0 ? id.slice(i + 1) : id;
   };
 
-  const displayList: {
-    id: string;
-    displayId: string;
-    type?: string;
-    candidates: string[];
-    matchedDefault: MatchedDefault | null;
-    isDeletedResidue?: boolean;
-  }[] = [
-    ...providerModels.map((p) => ({
-      id: p.id,
-      displayId: p.id,
-      type: p.type,
-      candidates: p.candidates,
-      matchedDefault: p.matched_default ?? null,
-    })),
-    ...deletedProviders.map((p) => ({
-      id: p.provider_id,
-      displayId: p.provider_id,
-      type: undefined,
-      candidates: p.models || [],
-      matchedDefault: p.matched_default ?? null,
-      isDeletedResidue: true,
-    })),
-  ];
+  const currentDisplayList = useMemo<PricingDisplayProvider[]>(
+    () =>
+      providerModels.map((p) => ({
+        id: p.id,
+        displayId: p.model || p.id,
+        type: p.type,
+        candidates: p.candidates,
+        matchedDefault: p.matched_default ?? null,
+      })),
+    [providerModels],
+  );
+
+  const deletedDisplayList = useMemo<PricingDisplayProvider[]>(
+    () =>
+      deletedProviders.map((p) => ({
+        id: p.provider_id,
+        displayId: p.provider_id,
+        type: undefined,
+        candidates: p.models || [],
+        matchedDefault: p.matched_default ?? null,
+        isDeletedResidue: true,
+      })),
+    [deletedProviders],
+  );
+
+  const pricingClusters = useMemo<PricingCluster[]>(() => {
+    if (data?.pricing_clusters?.length) {
+      return data.pricing_clusters
+        .map((cluster) => ({
+          ...cluster,
+          provider_ids: (cluster.provider_ids || []).filter((id) =>
+            configIds.has(id),
+          ),
+        }))
+        .filter((cluster) => cluster.provider_ids.length > 0);
+    }
+    const grouped = new Map<string, PricingCluster>();
+    for (const provider of providerModels) {
+      const id = provider.supplier_id || provider.id;
+      const cluster = grouped.get(id) || {
+        id,
+        name: provider.supplier_name || id,
+        provider_ids: [],
+      };
+      cluster.provider_ids.push(provider.id);
+      grouped.set(id, cluster);
+    }
+    return Array.from(grouped.values());
+  }, [data?.pricing_clusters, providerModels, configIds]);
+
+  useEffect(() => {
+    if (!pricingClusters.some((cluster) => cluster.id === selectedClusterId)) {
+      setSelectedClusterId(pricingClusters[0]?.id ?? "");
+    }
+  }, [pricingClusters, selectedClusterId]);
+
+  const currentProviderById = useMemo(
+    () => new Map(currentDisplayList.map((provider) => [provider.id, provider])),
+    [currentDisplayList],
+  );
+  const clusterIdByProvider = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const cluster of pricingClusters) {
+      for (const providerId of cluster.provider_ids) map.set(providerId, cluster.id);
+    }
+    return map;
+  }, [pricingClusters]);
 
   // 未定价告警按精确 provider_id 分组，用于可点击跳转
   const unpricedByProvider = useMemo(() => {
@@ -294,13 +344,38 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
 
   // 点击未定价告警行 → 跳转到对应 provider 卡片
   const jumpToProvider = (pid: string) => {
+    const clusterId = clusterIdByProvider.get(pid);
+    if (clusterId) setSelectedClusterId(clusterId);
     setHighlightTarget(pid);
     setHighlightSignal((s) => s + 1);
   };
 
   // 统计概要数字
-  const totalProviders = displayList.length;
-  const unmatchedCount = displayList.filter((p) => !p.matchedDefault).length;
+  const totalProviders = currentDisplayList.length;
+  const unmatchedCount = currentDisplayList.filter(
+    (p) => !p.matchedDefault && isDraftEmpty(ensureDraft(p.id)),
+  ).length;
+
+  const renderProviderCard = (p: PricingDisplayProvider) => (
+    <ProviderPricingCard
+      key={p.id}
+      providerId={p.id}
+      displayId={p.displayId}
+      type={p.type}
+      candidates={p.candidates}
+      draft={ensureDraft(p.id)}
+      matchedDefault={p.matchedDefault}
+      hasUserOverride={!isDraftEmpty(ensureDraft(p.id))}
+      isDeletedResidue={p.isDeletedResidue}
+      hasUsage={hasUnpricedUsage(p.id)}
+      highlightSignal={highlightTarget === p.id ? highlightSignal : undefined}
+      onChange={(patch) => updateDraft(p.id, patch)}
+      onClear={() => clearDraft(p.id)}
+      onDeleteData={
+        p.isDeletedResidue ? () => deleteResidualData(p.id) : undefined
+      }
+    />
+  );
 
   return (
     <div>
@@ -339,78 +414,44 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
         </Panel>
       )}
 
-      {pricingClusters.length > 0 && (
-        <Panel className="pricing-catalog-panel">
-          <div className="pricing-header">
-            <h2>模型计费规则</h2>
-            <span className="muted small">
-              {Object.keys(defaults).length} 个模型 · {pricingClusters.length} 个供应商聚类
-            </span>
-          </div>
-          <div className="muted small pricing-catalog-help">
-            左侧选择供应商聚类，右侧滚动查看具体规则。规则基准来自 OpenRouter；聚类倍率会在最终成本中实时生效。
-          </div>
-          <PricingCatalog
-            clusters={pricingClusters}
-            defaults={defaults}
-            multipliers={multiplierDrafts}
-            onMultiplierChange={updateMultiplier}
-          />
-        </Panel>
-      )}
-
-      <Panel>
+      <Panel className="pricing-catalog-panel">
         <div className="pricing-header">
-          <h2>Provider 自定义定价</h2>
+          <h2>供应商定价</h2>
           <div className="pricing-header-stats">
-            <span className="muted small">{totalProviders} 个 Provider</span>
+            <span className="muted small">
+              {pricingClusters.length} 个 AstrBot 供应商 · {totalProviders}{" "}
+              个现有模型配置
+            </span>
             {unmatchedCount > 0 && (
               <span className="pricing-unmatched-count">
-                {unmatchedCount} 个无内置匹配
+                {unmatchedCount} 个未定价
               </span>
             )}
           </div>
         </div>
-        <div className="muted small" style={{ marginBottom: 8 }}>
-          按 <strong>provider_id</strong> 设置定价。未设置时按模型名匹配内置默认。
-          修改后自动保存、即时热生效，告警同步更新。
+        <div className="muted small pricing-catalog-help">
+          仅显示 AstrBot 当前配置中的 Provider/模型，并按{" "}
+          <strong>provider_source_id</strong>{" "}
+          聚类。同一供应商的模型集中在右侧；内置价格只作为现有模型的默认匹配，展开卡片即可直接覆盖。
         </div>
-        {deletedProviders.length > 0 && (
-          <div className="pricing-residue-help">
-            “已删除供应商残留”表示该 Provider 已不在 AstrBot 配置中；删除残留数据会永久清除其历史用量、补充记录和旧定价。
-          </div>
-        )}
-        {displayList.length === 0 && (
+        {pricingClusters.length > 0 ? (
+          <PricingCatalog
+            clusters={pricingClusters}
+            selectedId={selectedClusterId}
+            onSelect={setSelectedClusterId}
+            multipliers={multiplierDrafts}
+            onMultiplierChange={updateMultiplier}
+            renderProvider={(providerId) => {
+              const provider = currentProviderById.get(providerId);
+              return provider ? renderProviderCard(provider) : null;
+            }}
+          />
+        ) : (
           <div className="muted small" style={{ margin: "8px 0" }}>
-            未获取到当前 AstrBot 的 provider 配置。可在 AstrBot 主配置添加 provider 后重载插件。
+            未获取到当前 AstrBot 的 provider 配置。可在 AstrBot
+            主配置添加 provider 后重载插件。
           </div>
         )}
-        <div className="overrides-list">
-          {displayList.map((p) => (
-            <ProviderPricingCard
-              key={p.id}
-              providerId={p.id}
-              displayId={p.displayId}
-              type={p.type}
-              candidates={p.candidates}
-              draft={ensureDraft(p.id)}
-              matchedDefault={p.matchedDefault}
-              hasUserOverride={!isDraftEmpty(ensureDraft(p.id))}
-              isDeletedResidue={p.isDeletedResidue}
-              hasUsage={hasUnpricedUsage(p.id)}
-              highlightSignal={
-                highlightTarget === p.id ? highlightSignal : undefined
-              }
-              onChange={(patch) => updateDraft(p.id, patch)}
-              onClear={() => clearDraft(p.id)}
-              onDeleteData={
-                p.isDeletedResidue
-                  ? () => deleteResidualData(p.id)
-                  : undefined
-              }
-            />
-          ))}
-        </div>
         <div className="row" style={{ marginTop: 8, gap: 10, alignItems: "center" }}>
           <Button
             onClick={reset}
@@ -422,6 +463,23 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
           <span className="muted">{resetResult}</span>
         </div>
       </Panel>
+
+      {deletedDisplayList.length > 0 && (
+        <Panel>
+          <div className="pricing-header">
+            <h2>已删除供应商残留</h2>
+            <span className="muted small">
+              {deletedDisplayList.length} 个已不在 AstrBot 配置中的 Provider
+            </span>
+          </div>
+          <div className="pricing-residue-help">
+            以下内容不属于当前供应商聚类，仅用于清理历史用量、补充记录和旧定价。
+          </div>
+          <div className="overrides-list">
+            {deletedDisplayList.map(renderProviderCard)}
+          </div>
+        </Panel>
+      )}
 
       <SaveToast status={status} error={error} />
     </div>

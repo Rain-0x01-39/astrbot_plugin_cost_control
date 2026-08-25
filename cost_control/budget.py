@@ -32,12 +32,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .attributor import _str_tokens
-from .config import (
-    enabled_overrides,
-    get_config,
-    get_pricing,
-)
-from .cost import compute_cost_grouped, compute_row_cost
+from .config import enabled_overrides, get_config
+from .cost import compute_row_cost
 
 
 def resolve_tz(context: Any) -> ZoneInfo:
@@ -446,7 +442,7 @@ class BudgetMixin:
 
             # ===== 1. 局部阈值（override）=====
             if overrides:
-                pricing = self.get_pricing() if has_global_cost else get_pricing(cfg)
+                pricing = self.get_pricing()
                 for idx, ov in enumerate(overrides):
                     matched = match_override(ov, umo, user_id, provider_id)
                     if matched is None:

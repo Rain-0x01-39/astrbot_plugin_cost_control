@@ -1,14 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import type { PriceEntry, PricingCluster } from "../lib/types";
-
-function formatRate(value: number | undefined, multiplier: number): string {
-  if (value == null) return "-";
-  const effective = value * multiplier;
-  return effective.toLocaleString("zh-CN", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 6,
-  });
-}
+import { useState, type ReactNode } from "react";
+import type { PricingCluster } from "../lib/types";
 
 function parseMultiplier(raw: string): number {
   const value = Number(raw);
@@ -17,46 +8,39 @@ function parseMultiplier(raw: string): number {
 
 export function PricingCatalog({
   clusters,
-  defaults,
+  selectedId,
+  onSelect,
   multipliers,
   onMultiplierChange,
+  renderProvider,
 }: {
   clusters: PricingCluster[];
-  defaults: Record<string, PriceEntry>;
+  selectedId: string;
+  onSelect: (clusterId: string) => void;
   multipliers: Record<string, string>;
   onMultiplierChange: (clusterId: string, value: string) => void;
+  renderProvider: (providerId: string, multiplier: number) => ReactNode;
 }) {
-  const [selectedId, setSelectedId] = useState(clusters[0]?.id ?? "");
   const [editingId, setEditingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!clusters.some((cluster) => cluster.id === selectedId)) {
-      setSelectedId(clusters[0]?.id ?? "");
-    }
-  }, [clusters, selectedId]);
-
   const selected =
     clusters.find((cluster) => cluster.id === selectedId) ?? clusters[0];
-  const rawMultiplier = selected ? multipliers[selected.id] ?? "1" : "1";
-  const multiplier = parseMultiplier(rawMultiplier);
-  const modelRows = useMemo(
-    () =>
-      (selected?.models ?? [])
-        .map((model) => ({ model, entry: defaults[model] ?? {} }))
-        .sort((a, b) => a.model.localeCompare(b.model)),
-    [defaults, selected],
-  );
 
   if (!selected) return null;
 
+  const rawMultiplier = multipliers[selected.id] ?? "1";
+  const multiplier = parseMultiplier(rawMultiplier);
+
   return (
     <div className="pricing-catalog">
-      <aside className="pricing-cluster-sidebar" aria-label="供应商聚类目录">
-        <div className="pricing-cluster-sidebar-title">供应商聚类</div>
-        <div className="pricing-cluster-directory" role="tablist" aria-orientation="vertical">
+      <aside className="pricing-cluster-sidebar" aria-label="AstrBot 供应商目录">
+        <div className="pricing-cluster-sidebar-title">ASTRBOT 供应商</div>
+        <div
+          className="pricing-cluster-directory"
+          role="tablist"
+          aria-orientation="vertical"
+        >
           {clusters.map((cluster) => {
-            const raw = multipliers[cluster.id] ?? "1";
-            const factor = parseMultiplier(raw);
+            const factor = parseMultiplier(multipliers[cluster.id] ?? "1");
             const active = cluster.id === selected.id;
             return (
               <button
@@ -65,11 +49,13 @@ export function PricingCatalog({
                 role="tab"
                 aria-selected={active}
                 className={`pricing-cluster-item ${active ? "is-active" : ""}`}
-                onClick={() => setSelectedId(cluster.id)}
+                onClick={() => onSelect(cluster.id)}
               >
                 <span className="pricing-cluster-item-main">
                   <span className="pricing-cluster-name">{cluster.name}</span>
-                  <span className="pricing-cluster-count">{cluster.models.length}</span>
+                  <span className="pricing-cluster-count">
+                    {cluster.provider_ids.length}
+                  </span>
                 </span>
                 {factor !== 1 && (
                   <span className="pricing-cluster-factor">{factor}×</span>
@@ -86,7 +72,7 @@ export function PricingCatalog({
             <div className="pricing-cluster-detail-title-row">
               <h3>{selected.name}</h3>
               <span className="pricing-cluster-model-count">
-                {modelRows.length} 条计费规则
+                {selected.provider_ids.length} 个现有模型配置
               </span>
               <span
                 className={`pricing-cluster-current-factor ${multiplier !== 1 ? "is-custom" : ""}`}
@@ -95,7 +81,7 @@ export function PricingCatalog({
               </span>
             </div>
             <div className="muted small">
-              USD / 百万 token；下表显示应用聚类倍率后的当前生效价。
+              卡片显示当前自定义价或内置匹配价；展开即可直接修改。
             </div>
           </div>
           <button
@@ -115,9 +101,11 @@ export function PricingCatalog({
         {editingId === selected.id && (
           <div className="pricing-multiplier-editor">
             <div className="pricing-multiplier-copy">
-              <span className="pricing-multiplier-label">{selected.name} 模型聚类倍率</span>
+              <span className="pricing-multiplier-label">
+                {selected.name} 供应商倍率
+              </span>
               <span className="muted small">
-                对该聚类的内置价和 Provider 自定义价统一相乘，修改后自动保存。
+                对该 AstrBot Provider Source 下的现有模型统一相乘；卡片中仍填写基准价。
               </span>
             </div>
             <label className="pricing-multiplier-input-wrap">
@@ -137,7 +125,7 @@ export function PricingCatalog({
                     onMultiplierChange(selected.id, "1");
                   }
                 }}
-                aria-label={`${selected.name} 模型聚类倍率`}
+                aria-label={`${selected.name} 供应商倍率`}
               />
               <span>×</span>
             </label>
@@ -153,37 +141,10 @@ export function PricingCatalog({
           </div>
         )}
 
-        <div className="pricing-rule-scroll">
-          <table className="pricing-catalog-table">
-            <thead>
-              <tr>
-                <th>模型</th>
-                <th>输入</th>
-                <th>缓存命中</th>
-                <th>输出</th>
-                <th>缓存写入</th>
-              </tr>
-            </thead>
-            <tbody>
-              {modelRows.map(({ model, entry }) => (
-                <tr key={model}>
-                  <td className="mono">{model}</td>
-                  <td title={`基准价 ${entry.input ?? "-"} × ${multiplier}`}>
-                    {formatRate(entry.input, multiplier)}
-                  </td>
-                  <td title={`基准价 ${entry.input_cached ?? "-"} × ${multiplier}`}>
-                    {formatRate(entry.input_cached, multiplier)}
-                  </td>
-                  <td title={`基准价 ${entry.output ?? "-"} × ${multiplier}`}>
-                    {formatRate(entry.output, multiplier)}
-                  </td>
-                  <td title={`基准价 ${entry.cache_creation ?? "-"} × ${multiplier}`}>
-                    {formatRate(entry.cache_creation, multiplier)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="pricing-rule-scroll pricing-provider-rule-scroll">
+          {selected.provider_ids.map((providerId) =>
+            renderProvider(providerId, multiplier),
+          )}
         </div>
       </section>
     </div>

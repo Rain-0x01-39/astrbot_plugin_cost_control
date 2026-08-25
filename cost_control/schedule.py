@@ -21,7 +21,7 @@ from typing import Any
 from astrbot import logger
 
 from .budget import day_window_start, month_window_start, resolve_tz
-from .config import get_config, get_pricing, get_rates
+from .config import get_config, get_rates
 from .cost import compute_cost_grouped_in_main
 from .exchange_rates import currency_to_symbol, get_main_currency
 
@@ -55,6 +55,7 @@ class ScheduleMixin:
     query_usage_grouped: Any
     cleanup_old_supplements: Any
     push_to_session: Any
+    get_pricing: Any
 
     def _report_cron(self) -> str:
         """从 ``alerts.daily_report_time`` 解析出日报 cron 表达式。"""
@@ -160,7 +161,9 @@ class ScheduleMixin:
         try:
             rows = await self.query_usage_grouped(by="provider_model", start=start)
             cfg = getattr(self, "cfg", None)
-            pricing = get_pricing(cfg)
-            return compute_cost_grouped_in_main(rows, pricing, get_main_currency(cfg), get_rates(cfg))
+            pricing = self.get_pricing()
+            return compute_cost_grouped_in_main(
+                rows, pricing, get_main_currency(cfg), get_rates(cfg)
+            )
         except Exception:
             return 0.0

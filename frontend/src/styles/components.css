@@ -1007,6 +1007,12 @@ tr:hover td {
   font-weight: 600;
 }
 
+.pricing-provider-source-id {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 400;
+}
+
 .pricing-candidates {
   display: flex;
   flex-wrap: wrap;
@@ -1104,7 +1110,7 @@ tr:hover td {
   gap: 10px;
 }
 
-/* ===== 模型计费供应商聚类目录 ===== */
+/* ===== AstrBot 供应商定价聚类目录 ===== */
 .pricing-catalog-help {
   margin: -2px 0 12px;
 }
@@ -1299,28 +1305,12 @@ tr:hover td {
   overscroll-behavior: contain;
 }
 
-.pricing-catalog-table {
-  min-width: 680px;
+.pricing-provider-rule-scroll {
+  padding: 10px 10px 2px;
 }
 
-.pricing-catalog-table thead {
-  position: sticky;
-  z-index: 1;
-  top: 0;
-  background: var(--panel);
-  box-shadow: 0 1px 0 var(--border);
-}
-
-.pricing-catalog-table th:not(:first-child),
-.pricing-catalog-table td:not(:first-child) {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.pricing-catalog-table td:first-child {
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.pricing-provider-rule-scroll .pricing-card:last-child {
+  margin-bottom: 0;
 }
 
 .pricing-unmatched-count {

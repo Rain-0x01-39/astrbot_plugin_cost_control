@@ -51,7 +51,7 @@ from .config import (
 )
 from .default_pricing import DEFAULT_PRICING
 from .pricing_clusters import (
-    build_pricing_cluster_catalog,
+    build_provider_pricing_clusters,
     normalize_pricing_multipliers,
 )
 
@@ -1165,10 +1165,12 @@ class WebApiMixin:
     def _collect_provider_models(self) -> list[dict[str, Any]]:
         """从 ``context.get_config()`` 遍历 provider 配置，返回 provider + 候选模型列表。
 
-        每个 provider 读 ``id`` / ``type`` / 顶层 ``model``（主模型，回退
+        每个 provider 读 ``id`` / ``type`` / ``provider_source_id`` / 顶层 ``model``
+        （主模型，回退
         ``model_config.model``）/ 顶层 ``model_list``（候选模型数组，回退
         ``model_config.model_list``，每项 ``model_name`` / ``enable``），合并主模型
-        + 启用候选，按 id 去重，返回 ``[{id, model, type, candidates: [str, ...]}]``。
+        + 启用候选，按 id 去重，并用 ``provider_sources`` 补供应商名称，返回
+        ``[{id, model, type, candidates, supplier_id, supplier_name}]``。
 
         字段位置：4.25.5 起 provider 的 ``model`` / ``model_list`` 在顶层（已核对
         ``astrbot/core/config/default.py``），旧版在 ``model_config`` 内，故两层兼容。
@@ -1181,6 +1183,15 @@ class WebApiMixin:
         try:
             cfg = self.context.get_config() or {}
             prov_list = cfg.get("provider") if isinstance(cfg, dict) else None
+            source_list = cfg.get("provider_sources") if isinstance(cfg, dict) else None
+            source_by_id: dict[str, dict[str, Any]] = {}
+            if isinstance(source_list, list):
+                for source in source_list:
+                    if not isinstance(source, dict):
+                        continue
+                    source_id = str(source.get("id") or "").strip()
+                    if source_id:
+                        source_by_id[source_id] = source
             if isinstance(prov_list, list):
                 for p in prov_list:
                     try:
@@ -1190,7 +1201,17 @@ class WebApiMixin:
                         if not pid or pid in seen:
                             continue
                         seen.add(pid)
-                        ptype = str(p.get("type") or "")
+                        supplier_id = str(p.get("provider_source_id") or "").strip()
+                        source = source_by_id.get(supplier_id, {})
+                        supplier_id = supplier_id or pid
+                        supplier_name = str(
+                            source.get("name")
+                            or source.get("display_name")
+                            or source.get("id")
+                            or p.get("provider_source_name")
+                            or supplier_id
+                        ).strip()
+                        ptype = str(p.get("type") or source.get("type") or "")
                         mc = p.get("model_config") or {}
                         if not isinstance(mc, dict):
                             mc = {}
@@ -1218,6 +1239,8 @@ class WebApiMixin:
                                 "model": main_model or "",
                                 "type": ptype,
                                 "candidates": candidates,
+                                "supplier_id": supplier_id,
+                                "supplier_name": supplier_name or supplier_id,
                             }
                         )
                     except Exception:
@@ -1255,6 +1278,8 @@ class WebApiMixin:
                         "model": model,
                         "type": mtype,
                         "candidates": [model] if model else [],
+                        "supplier_id": pid,
+                        "supplier_name": pid,
                     }
                     by_id[pid] = entry
                     out.append(entry)
@@ -1415,8 +1440,10 @@ class WebApiMixin:
         - ``user_pricing``：用户自定义定价（``cfg["pricing"]``，key=provider_id）。
         - ``defaults``：内置出厂默认单价（``DEFAULT_PRICING``，key=模型名，per_token），
           供前端折叠区只读展示与 per_token 预填基准。
-        - ``pricing_clusters``：默认模型按供应商聚类后的目录与模型 key 列表。
-        - ``pricing_multipliers``：用户为供应商聚类设置的倍率（缺省聚类视为 1 倍）。
+        - ``pricing_clusters``：当前 AstrBot Provider 按 ``provider_source_id`` 聚合的目录；
+          只包含现有 Provider/模型，不展开完整内置价格库。
+        - ``pricing_multipliers``：用户为 AstrBot Provider Source 聚类设置的倍率
+          （缺省聚类视为 1 倍）。
         - ``unpriced``：全量历史（``query_usage_grouped(by="provider_model")``）中
           :func:`cost.resolve_pricing` 解析不到定价的 (provider,model)——其成本被计
           为 0，会使成本统计偏低，需提示用户补定价。附 token 量表明失真影响范围。
@@ -1528,7 +1555,7 @@ class WebApiMixin:
                     "deleted_providers": deleted_providers,
                     "user_pricing": user_pricing,
                     "defaults": DEFAULT_PRICING,
-                    "pricing_clusters": build_pricing_cluster_catalog(DEFAULT_PRICING),
+                    "pricing_clusters": build_provider_pricing_clusters(provider_models),
                     "pricing_multipliers": pricing.get("multipliers", {}),
                     "unpriced": unpriced,
                     "currency_symbol": get_currency_symbol(_pcfg),
@@ -1680,7 +1707,7 @@ class WebApiMixin:
         (:func:`coerce_to_default_type`)；``budget_overrides`` 逐条过
         :func:`normalize_budget_override`（非法整条丢弃）；``fallback_providers``
         逐条过 :func:`normalize_fallback_provider`；``pricing`` 接受任意 dict；
-        ``pricing_multipliers`` 接受供应商聚类 ID 到 0.01–100 倍率的映射；
+        ``pricing_multipliers`` 接受 AstrBot ``provider_source_id`` 到 0.01–100 倍率的映射；
         ``default_on_exceeded`` 限定 ``stop|fallback|warn``。未知 key 忽略。
         """
         if not isinstance(body, dict):
@@ -1728,7 +1755,7 @@ class WebApiMixin:
                 out[k] = normalized_p
             elif k == "pricing_multipliers":
                 if not isinstance(v, dict):
-                    return None, "pricing_multipliers 必须是对象（key=cluster_id）"
+                    return None, "pricing_multipliers 必须是对象（key=provider_source_id）"
                 out[k] = normalize_pricing_multipliers(v)
             elif k == "exchange_rates":
                 # 接受任意 {货币代码: 汇率} dict，逐值转 float（可能含 API 同步的

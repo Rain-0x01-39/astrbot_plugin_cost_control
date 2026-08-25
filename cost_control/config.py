@@ -57,7 +57,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     # 5 维全局默认花费预算的货币代码（dim -> 代码，空=主货币）。
     "budgets_cost_currency": {},
     "pricing": {},  # 用户自定义定价，key=provider_id，value 按 mode（见 get_pricing）
-    # 内置模型供应商聚类倍率，key=cluster_id；1 倍无需持久化。
+    # AstrBot Provider Source 供应商聚类倍率，key=provider_source_id；1 倍无需持久化。
     "pricing_multipliers": {},
     # 局部阈值（每条规则挂自己的 on_exceeded；优先级高于全局 5 维）。
     # 规则对象形如：
@@ -236,7 +236,9 @@ def get_pricing(config: dict[str, Any] | None) -> dict[str, Any]:
       ``mode``（``per_token``/``per_turn``/``per_request``）规范化；缺 ``mode`` 视为
       ``per_token``（兼容旧结构）。优先级高于 defaults——见
       :func:`cost_control.cost.resolve_pricing`。
-    - ``multipliers``：供应商模型聚类倍率。命中基础规则后统一相乘；未配置即 1 倍。
+    - ``multipliers``：AstrBot Provider Source 聚类倍率。命中基础规则后统一相乘；
+      未配置即 1 倍。Provider 到 Source 的映射由 :class:`cost_control.cost.CostMixin`
+      在运行时附加，不改变默认模型价的匹配逻辑。
 
     Args:
         config: 插件配置字典。

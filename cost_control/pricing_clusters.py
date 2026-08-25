@@ -1,9 +1,4 @@
-"""内置模型定价的供应商聚类与倍率规范化。
-
-定价快照为了提高模型名匹配率，只保留了 OpenRouter slug 的模型部分，未保留
-供应商命名空间。本模块按稳定的模型家族前缀恢复供应商聚类；无法可靠识别的模型
-统一进入 ``other``，避免因猜错供应商而套用错误倍率。
-"""
+"""AstrBot Provider Source 定价聚类与倍率规范化。"""
 
 from __future__ import annotations
 
@@ -11,70 +6,19 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-# 顺序同时决定前端目录的显示顺序。越具体的家族放在越靠前的位置。
-PRICING_CLUSTERS: tuple[dict[str, Any], ...] = (
-    {"id": "openai", "name": "OpenAI", "prefixes": ("gpt-", "o1", "o3", "o4")},
-    {"id": "anthropic", "name": "Anthropic", "prefixes": ("claude-",)},
-    {"id": "google", "name": "Google", "prefixes": ("gemini-", "gemma-")},
-    {"id": "deepseek", "name": "DeepSeek", "prefixes": ("deepseek-",)},
-    {"id": "alibaba", "name": "阿里云 / Qwen", "prefixes": ("qwen", "qwq-")},
-    {"id": "zhipu", "name": "智谱 AI", "prefixes": ("glm-",)},
-    {
-        "id": "mistral",
-        "name": "Mistral AI",
-        "prefixes": (
-            "mistral-",
-            "mixtral-",
-            "codestral-",
-            "devstral-",
-            "ministral-",
-            "voxtral-",
-        ),
-    },
-    {"id": "meta", "name": "Meta", "prefixes": ("llama-", "l3-", "l3.")},
-    {"id": "minimax", "name": "MiniMax", "prefixes": ("minimax-",)},
-    {"id": "moonshot", "name": "Moonshot AI", "prefixes": ("kimi-",)},
-    {"id": "xai", "name": "xAI", "prefixes": ("grok-",)},
-    {"id": "amazon", "name": "Amazon", "prefixes": ("nova-",)},
-    {"id": "cohere", "name": "Cohere", "prefixes": ("command-",)},
-    {"id": "bytedance", "name": "字节跳动", "prefixes": ("doubao-", "seed-")},
-    {"id": "baidu", "name": "百度", "prefixes": ("ernie-",)},
-    {"id": "tencent", "name": "腾讯", "prefixes": ("hunyuan-",)},
-    {"id": "xiaomi", "name": "小米", "prefixes": ("mimo-",)},
-    {"id": "microsoft", "name": "Microsoft", "prefixes": ("phi-",)},
-    {"id": "nvidia", "name": "NVIDIA", "prefixes": ("nemotron-",)},
-    {"id": "ibm", "name": "IBM", "prefixes": ("granite-",)},
-    {"id": "perplexity", "name": "Perplexity", "prefixes": ("sonar-",)},
-    {"id": "ai21", "name": "AI21 Labs", "prefixes": ("jamba-",)},
-    {"id": "liquid", "name": "Liquid AI", "prefixes": ("lfm-",)},
-    {"id": "stepfun", "name": "阶跃星辰", "prefixes": ("step-",)},
-    {"id": "reka", "name": "Reka AI", "prefixes": ("reka-",)},
-    {"id": "other", "name": "其他模型", "prefixes": ()},
-)
-
-_CLUSTER_IDS = {str(item["id"]) for item in PRICING_CLUSTERS}
-
-
-def pricing_cluster_id(model: str | None) -> str:
-    """根据模型家族返回稳定的供应商聚类 ID，无法识别时返回 ``other``。"""
-    if not model:
-        return "other"
-    normalized = str(model).rsplit("/", 1)[-1].strip().lower().replace("_", "-")
-    for item in PRICING_CLUSTERS:
-        for prefix in item["prefixes"]:
-            if normalized.startswith(prefix):
-                return str(item["id"])
-    return "other"
-
 
 def normalize_pricing_multipliers(raw: Any) -> dict[str, float]:
-    """规范化 ``{cluster_id: multiplier}``，仅保留 0.01–100 且不等于 1 的值。"""
+    """规范化 ``{provider_source_id: multiplier}``。
+
+    AstrBot 的 Provider Source ID 是用户可配置字符串，不能限制为插件内置白名单。
+    这里只校验 ID 非空、长度合理，以及倍率处于 0.01–100；1 倍无需持久化。
+    """
     if not isinstance(raw, Mapping):
         return {}
     out: dict[str, float] = {}
     for key, value in raw.items():
-        cluster_id = str(key or "").strip().lower()
-        if cluster_id not in _CLUSTER_IDS:
+        source_id = str(key or "").strip()
+        if not source_id or len(source_id) > 256:
             continue
         try:
             multiplier = float(value)
@@ -83,23 +27,49 @@ def normalize_pricing_multipliers(raw: Any) -> dict[str, float]:
         if not math.isfinite(multiplier) or multiplier < 0.01 or multiplier > 100:
             continue
         if abs(multiplier - 1.0) > 1e-12:
-            out[cluster_id] = multiplier
+            out[source_id] = multiplier
     return out
 
 
-def build_pricing_cluster_catalog(
-    defaults: Mapping[str, Any],
+def provider_cluster_map_from_config(config: Any) -> dict[str, str]:
+    """从 AstrBot 主配置生成 ``provider_id → provider_source_id`` 精确映射。
+
+    旧配置或独立 Provider 没有 ``provider_source_id`` 时，以 Provider ID 自身作为
+    聚类 ID，确保它仍可单独设置倍率，且不会误归入其它供应商。
+    """
+    if not isinstance(config, Mapping):
+        return {}
+    providers = config.get("provider")
+    if not isinstance(providers, list):
+        return {}
+    out: dict[str, str] = {}
+    for item in providers:
+        if not isinstance(item, Mapping):
+            continue
+        provider_id = str(item.get("id") or "").strip()
+        if not provider_id:
+            continue
+        source_id = str(item.get("provider_source_id") or "").strip()
+        out[provider_id] = source_id or provider_id
+    return out
+
+
+def build_provider_pricing_clusters(
+    provider_models: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """把默认定价模型分入供应商目录；空聚类不返回。"""
-    grouped: dict[str, list[str]] = {str(item["id"]): [] for item in PRICING_CLUSTERS}
-    for model in sorted(str(key) for key in defaults):
-        grouped[pricing_cluster_id(model)].append(model)
-    return [
-        {
-            "id": str(item["id"]),
-            "name": str(item["name"]),
-            "models": grouped[str(item["id"])],
-        }
-        for item in PRICING_CLUSTERS
-        if grouped[str(item["id"])]
-    ]
+    """按 AstrBot Provider Source 聚合当前已有 Provider/模型，保持配置顺序。"""
+    grouped: dict[str, dict[str, Any]] = {}
+    for provider in provider_models:
+        if not isinstance(provider, dict):
+            continue
+        provider_id = str(provider.get("id") or "").strip()
+        if not provider_id:
+            continue
+        source_id = str(provider.get("supplier_id") or provider_id).strip() or provider_id
+        source_name = str(provider.get("supplier_name") or source_id).strip() or source_id
+        cluster = grouped.setdefault(
+            source_id,
+            {"id": source_id, "name": source_name, "provider_ids": []},
+        )
+        cluster["provider_ids"].append(provider_id)
+    return list(grouped.values())

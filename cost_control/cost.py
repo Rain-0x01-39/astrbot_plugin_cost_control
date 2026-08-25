@@ -1,8 +1,8 @@
 """成本计算 Mixin。
 
 根据生效的定价结构（:func:`cost_control.config.get_pricing` 返回的
-``{"defaults", "user", "multipliers"}``）把 token 用量 / 调用次数 / 请求数换算为
-USD 成本。
+``{"defaults", "user", "multipliers"}``，运行时再附加 ``provider_clusters``）把
+token 用量 / 调用次数 / 请求数换算为 USD 成本。
 
 支持三种计费模式（``mode``）：
 
@@ -151,7 +151,7 @@ def resolve_pricing(
             if isinstance(candidate, dict) and candidate.get("mode"):
                 rule = candidate
     if rule is not None:
-        return _apply_cluster_multiplier(rule, model, pricing)
+        return _apply_cluster_multiplier(rule, provider_id, pricing)
     defaults = pricing.get("defaults") if isinstance(pricing, dict) else None
     matched_model: str | None = None
     if isinstance(defaults, dict):
@@ -162,22 +162,30 @@ def resolve_pricing(
                 rule = {"mode": "per_token", **prices}
     if rule is None:
         return None
-    return _apply_cluster_multiplier(rule, matched_model or model, pricing)
+    return _apply_cluster_multiplier(rule, provider_id, pricing)
 
 
 def _apply_cluster_multiplier(
     rule: dict[str, Any],
-    model: str | None,
+    provider_id: str | None,
     pricing: dict[str, Any],
 ) -> dict[str, Any]:
-    """把模型所属供应商聚类倍率应用到规则副本，不修改配置中的基础价格。"""
-    from .pricing_clusters import pricing_cluster_id
-
+    """按 AstrBot Provider Source 聚类倍率调整规则副本，不修改基础价格。"""
     multipliers = pricing.get("multipliers") if isinstance(pricing, dict) else None
-    if not isinstance(multipliers, dict):
+    provider_clusters = (
+        pricing.get("provider_clusters") if isinstance(pricing, dict) else None
+    )
+    if (
+        not provider_id
+        or not isinstance(multipliers, dict)
+        or not isinstance(provider_clusters, dict)
+    ):
+        return rule
+    cluster_id = provider_clusters.get(provider_id)
+    if not cluster_id:
         return rule
     try:
-        multiplier = float(multipliers.get(pricing_cluster_id(model), 1.0) or 1.0)
+        multiplier = float(multipliers.get(cluster_id, 1.0) or 1.0)
     except (TypeError, ValueError):
         return rule
     if multiplier <= 0 or abs(multiplier - 1.0) <= 1e-12:
@@ -408,8 +416,16 @@ class CostMixin:
     """按生效定价计算 USD 成本的 Mixin。"""
 
     def get_pricing(self) -> dict[str, Any]:
-        """返回当前生效的定价结构（``{"defaults", "user"}``，见 :func:`get_pricing`）。"""
-        return get_pricing(getattr(self, "cfg", None))
+        """返回生效定价，并附 AstrBot Provider 到供应商聚类的精确映射。"""
+        pricing = get_pricing(getattr(self, "cfg", None))
+        try:
+            from .pricing_clusters import provider_cluster_map_from_config
+
+            astrbot_config = self.context.get_config() or {}
+            pricing["provider_clusters"] = provider_cluster_map_from_config(astrbot_config)
+        except Exception:
+            pricing["provider_clusters"] = {}
+        return pricing
 
     def get_main_currency(self) -> str:
         """返回当前主货币代码（默认 ``"$"``）。"""

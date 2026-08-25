@@ -303,6 +303,8 @@ export interface ProviderModelInfo {
   model?: string;
   type?: string;
   candidates: string[];
+  supplier_id?: string;
+  supplier_name?: string;
   matched_default?: MatchedDefault | null;
 }
 
@@ -325,7 +327,7 @@ export interface DeletedProviderInfo {
 export interface PricingCluster {
   id: string;
   name: string;
-  models: string[];
+  provider_ids: string[];
 }
 
 export interface PricingResponse {
@@ -334,7 +336,7 @@ export interface PricingResponse {
   user_pricing?: Record<string, UserPricingEntry>; // key=provider_id
   defaults?: Record<string, PriceEntry>; // key=模型名，per_token
   pricing_clusters?: PricingCluster[];
-  pricing_multipliers?: Record<string, number>; // key=cluster_id，缺省=1
+  pricing_multipliers?: Record<string, number>; // key=provider_source_id，缺省=1
   unpriced?: PricingUnpriced[];
   currency_symbol?: string;
   exchange_rates?: Record<string, number>;
