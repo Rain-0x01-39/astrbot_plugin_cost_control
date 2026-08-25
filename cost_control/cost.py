@@ -1,7 +1,8 @@
 """成本计算 Mixin。
 
 根据生效的定价结构（:func:`cost_control.config.get_pricing` 返回的
-``{"defaults", "user"}``）把 token 用量 / 调用次数 / 请求数换算为 USD 成本。
+``{"defaults", "user", "multipliers"}``）把 token 用量 / 调用次数 / 请求数换算为
+USD 成本。
 
 支持三种计费模式（``mode``）：
 
@@ -142,18 +143,55 @@ def resolve_pricing(
         - ``{"mode":"per_request","price"}``
     """
     user = pricing.get("user") if isinstance(pricing, dict) else None
+    rule: dict[str, Any] | None = None
     if isinstance(user, dict) and provider_id:
         key = _best_match_key(provider_id, user)
         if key is not None:
-            rule = user[key]
-            if isinstance(rule, dict) and rule.get("mode"):
-                return rule
+            candidate = user[key]
+            if isinstance(candidate, dict) and candidate.get("mode"):
+                rule = candidate
+    if rule is not None:
+        return _apply_cluster_multiplier(rule, model, pricing)
     defaults = pricing.get("defaults") if isinstance(pricing, dict) else None
+    matched_model: str | None = None
     if isinstance(defaults, dict):
-        prices = match_pricing(model, defaults)
-        if prices:
-            return {"mode": "per_token", **prices}
-    return None
+        matched_model = _best_match_key(model, defaults)
+        if matched_model is not None:
+            prices = defaults[matched_model]
+            if isinstance(prices, dict) and prices:
+                rule = {"mode": "per_token", **prices}
+    if rule is None:
+        return None
+    return _apply_cluster_multiplier(rule, matched_model or model, pricing)
+
+
+def _apply_cluster_multiplier(
+    rule: dict[str, Any],
+    model: str | None,
+    pricing: dict[str, Any],
+) -> dict[str, Any]:
+    """把模型所属供应商聚类倍率应用到规则副本，不修改配置中的基础价格。"""
+    from .pricing_clusters import pricing_cluster_id
+
+    multipliers = pricing.get("multipliers") if isinstance(pricing, dict) else None
+    if not isinstance(multipliers, dict):
+        return rule
+    try:
+        multiplier = float(multipliers.get(pricing_cluster_id(model), 1.0) or 1.0)
+    except (TypeError, ValueError):
+        return rule
+    if multiplier <= 0 or abs(multiplier - 1.0) <= 1e-12:
+        return rule
+
+    out = dict(rule)
+    if out.get("mode", "per_token") == "per_token":
+        for field in ("input", "input_cached", "output", "cache_creation"):
+            value = out.get(field)
+            if value is not None:
+                out[field] = float(value or 0.0) * multiplier
+    elif out.get("price") is not None:
+        out["price"] = float(out.get("price", 0.0) or 0.0) * multiplier
+    return out
 
 
 def _cost_per_token(usage: dict[str, Any], rule: dict[str, Any]) -> float:

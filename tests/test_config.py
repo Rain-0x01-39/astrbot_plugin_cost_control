@@ -5,6 +5,7 @@ import os
 from cost_control.config import (
     coerce_to_default_type,
     deep_merge,
+    get_pricing,
     load_plugin_config,
     save_plugin_config,
     switches_from_config,
@@ -122,3 +123,16 @@ def test_plugin_config_overwrite(tmp_path):
     save_plugin_config(d, {"a": 1})
     save_plugin_config(d, {"a": 2, "b": 3})
     assert load_plugin_config(d) == {"a": 2, "b": 3}
+
+
+def test_get_pricing_includes_normalized_cluster_multipliers():
+    pricing = get_pricing(
+        {
+            "pricing_multipliers": {
+                "openai": "1.25",
+                "google": 1,
+                "invalid": 2,
+            }
+        }
+    )
+    assert pricing["multipliers"] == {"openai": 1.25}

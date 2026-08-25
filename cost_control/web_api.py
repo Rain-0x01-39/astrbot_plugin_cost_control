@@ -34,7 +34,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from .attributor import ESTIMATION_NOTE
@@ -50,6 +50,10 @@ from .config import (
     switches_from_config,
 )
 from .default_pricing import DEFAULT_PRICING
+from .pricing_clusters import (
+    build_pricing_cluster_catalog,
+    normalize_pricing_multipliers,
+)
 
 PLUGIN_NAME = "astrbot_plugin_cost_control"
 
@@ -58,6 +62,51 @@ CACHE_NOTE = (
     "命中率 = cache_read / (cache_read + 非缓存输入 + cache_creation)；优化潜力按平均命中率分档："
     "≥80% 优秀 / 60–80% 低 / 40–60% 中 / <40% 高。"
 )
+
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    """把 ORM 读回的 datetime 序列化为带 UTC 偏移的 ISO 串（纯函数，便于测试）。
+
+    ``CacheEvent`` / ``CostSupplement`` 的 ``created_at`` 以 aware UTC 写入，但
+    SQLite DATETIME 存储格式不含时区偏移，读回为 naive（墙钟即 UTC）。前端
+    ``new Date()`` 对无偏移的 ISO 串按浏览器本地时区解析，会导致显示时间偏差
+    一个时区偏移量，故此处统一补 ``+00:00``；已带 tzinfo 的值原样输出。
+    """
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.isoformat()
+
+
+def _deleted_provider_residues(
+    provider_models: list[dict[str, Any]],
+    usage_by_provider: dict[str, dict[str, int]],
+    user_pricing: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """汇总已不在当前配置中的 Provider 用量/定价残留（纯函数，便于测试）。"""
+    configured_ids = {
+        str(p.get("id") or "").strip()
+        for p in provider_models
+        if isinstance(p, dict) and str(p.get("id") or "").strip()
+    }
+    residue_ids = (set(usage_by_provider) | set(user_pricing)) - configured_ids
+    out: list[dict[str, Any]] = []
+    for pid in residue_ids:
+        pid_s = str(pid or "").strip()
+        if not pid_s:
+            continue
+        usage = usage_by_provider.get(pid_s, {})
+        out.append(
+            {
+                "provider_id": pid_s,
+                "tokens": int(usage.get("tokens", 0) or 0),
+                "count": int(usage.get("count", 0) or 0),
+                "has_pricing": pid_s in user_pricing,
+            }
+        )
+    out.sort(key=lambda x: (-x["tokens"], x["provider_id"]))
+    return out
 
 
 class WebApiMixin:
@@ -80,6 +129,8 @@ class WebApiMixin:
     query_usage_timeseries: Any
     query_cache_events: Any
     cleanup_old_supplements: Any
+    delete_supplements_by_provider: Any
+    delete_usage_by_provider: Any
     purge_module: Any
     # AiDiagMixin 提供。
     run_ai_diag: Any
@@ -126,6 +177,12 @@ class WebApiMixin:
                 (f"{prefix}/config", self.api_config, ["GET"], "当前插件配置"),
                 (f"{prefix}/actions/cleanup", self.api_action_cleanup, ["POST"], "手动清理"),
                 (f"{prefix}/actions/purge", self.api_action_purge, ["POST"], "按模块清空数据"),
+                (
+                    f"{prefix}/actions/delete_provider_data",
+                    self.api_action_delete_provider_data,
+                    ["POST"],
+                    "删除已下线 Provider 的历史数据",
+                ),
                 (f"{prefix}/actions/report", self.api_action_report, ["POST"], "手动推送日报"),
                 (
                     f"{prefix}/actions/save_config",
@@ -289,7 +346,7 @@ class WebApiMixin:
             "cost": cost,
             "cost_original": cost_original,
             "currency_symbol": currency_symbol,
-            "created_at": created.isoformat() if created else None,
+            "created_at": _iso_utc(created),
         }
 
     # ===== 端点 =====
@@ -1274,7 +1331,7 @@ class WebApiMixin:
                             "detail": getattr(r, "detail", "") or "",
                             "before": getattr(r, "before", None),
                             "after": getattr(r, "after", None),
-                            "created_at": created.isoformat() if created else None,
+                            "created_at": _iso_utc(created),
                         }
                     )
             except Exception:
@@ -1330,7 +1387,7 @@ class WebApiMixin:
                     "umo": getattr(s, "umo", "") or "",
                     "injection_total": inj,
                     "attribution": attr,
-                    "created_at": created.isoformat() if created else None,
+                    "created_at": _iso_utc(created),
                 }
                 items.append(item)
                 if isinstance(attr, dict):
@@ -1348,13 +1405,18 @@ class WebApiMixin:
     async def api_pricing(self, **kwargs: Any) -> dict[str, Any]:
         """``GET /pricing``：定价页所需全部数据。
 
-        返回 ``{provider_models, user_pricing, defaults, unpriced}``：
+        返回 ``{provider_models, deleted_providers, user_pricing, defaults,
+        pricing_clusters, pricing_multipliers, unpriced}``：
 
         - ``provider_models``：当前 AstrBot 配置的全部 provider 及其候选模型（见
           :meth:`_collect_provider_models`），供前端按 provider 展示与编辑。
+        - ``deleted_providers``：已不在当前配置中、但仍有历史用量或自定义定价的
+          Provider 残留，供前端明确标注并提供精确删除入口。
         - ``user_pricing``：用户自定义定价（``cfg["pricing"]``，key=provider_id）。
         - ``defaults``：内置出厂默认单价（``DEFAULT_PRICING``，key=模型名，per_token），
           供前端折叠区只读展示与 per_token 预填基准。
+        - ``pricing_clusters``：默认模型按供应商聚类后的目录与模型 key 列表。
+        - ``pricing_multipliers``：用户为供应商聚类设置的倍率（缺省聚类视为 1 倍）。
         - ``unpriced``：全量历史（``query_usage_grouped(by="provider_model")``）中
           :func:`cost.resolve_pricing` 解析不到定价的 (provider,model)——其成本被计
           为 0，会使成本统计偏低，需提示用户补定价。附 token 量表明失真影响范围。
@@ -1364,6 +1426,7 @@ class WebApiMixin:
 
             pricing = self.get_pricing()
             unpriced: list[dict[str, Any]] = []
+            usage_by_provider: dict[str, dict[str, int]] = {}
             # provider_id → 实际运行时模型名列表（来自用量记录，与成本计算同源）。
             # 配置里的 model / candidates 可能是路由名 / auto / 空，但运行时实际
             # 调用的模型名能匹配内置默认——用这些名字作为 matched_default 的回退。
@@ -1373,12 +1436,18 @@ class WebApiMixin:
                 for r in rows:
                     provider_id = r.get("provider_id") or ""
                     model = r.get("provider_model") or ""
-                    if model and resolve_pricing(provider_id or None, model, pricing) is None:
-                        tokens = (
-                            int(r.get("token_input_other", 0) or 0)
-                            + int(r.get("token_input_cached", 0) or 0)
-                            + int(r.get("token_output", 0) or 0)
+                    tokens = (
+                        int(r.get("token_input_other", 0) or 0)
+                        + int(r.get("token_input_cached", 0) or 0)
+                        + int(r.get("token_output", 0) or 0)
+                    )
+                    if provider_id:
+                        agg = usage_by_provider.setdefault(
+                            provider_id, {"tokens": 0, "count": 0}
                         )
+                        agg["tokens"] += tokens
+                        agg["count"] += int(r.get("count", 0) or 0)
+                    if model and resolve_pricing(provider_id or None, model, pricing) is None:
                         unpriced.append(
                             {
                                 "provider_id": provider_id,
@@ -1426,15 +1495,41 @@ class WebApiMixin:
                     p["matched_default"] = md
                 except Exception:
                     p["matched_default"] = None
+            user_pricing = pricing.get("user", {})
+            if not isinstance(user_pricing, dict):
+                user_pricing = {}
+            deleted_providers = _deleted_provider_residues(
+                provider_models, usage_by_provider, user_pricing
+            )
+            # 已删除项也提示其历史模型能否命中内置价，避免把原本可定价的数据误标为
+            # “未定价”。显示仍以 Provider 配置名为主，不伪造已不存在的供应商 type。
+            for item in deleted_providers:
+                pid = item["provider_id"]
+                tried = list(runtime_models.get(pid, []))
+                if pid not in tried:
+                    tried.append(pid)
+                item["models"] = list(runtime_models.get(pid, []))
+                item["matched_default"] = None
+                for model in tried:
+                    key = _best_match_key(model, DEFAULT_PRICING)
+                    if key:
+                        item["matched_default"] = {
+                            "model": key,
+                            "entry": DEFAULT_PRICING[key],
+                        }
+                        break
             from .config import get_currency_symbol
-            from .exchange_rates import get_rates, get_rate_updated_at
+            from .exchange_rates import get_rate_updated_at, get_rates
 
             _pcfg = getattr(self, "cfg", None)
             return self._ok(
                 {
                     "provider_models": provider_models,
-                    "user_pricing": pricing.get("user", {}),
+                    "deleted_providers": deleted_providers,
+                    "user_pricing": user_pricing,
                     "defaults": DEFAULT_PRICING,
+                    "pricing_clusters": build_pricing_cluster_catalog(DEFAULT_PRICING),
+                    "pricing_multipliers": pricing.get("multipliers", {}),
                     "unpriced": unpriced,
                     "currency_symbol": get_currency_symbol(_pcfg),
                     "exchange_rates": get_rates(_pcfg),
@@ -1480,6 +1575,63 @@ class WebApiMixin:
 
     # purge 最小调用间隔（秒），防误触重复调用。
     _purge_last_ts: float = 0.0
+
+    async def api_action_delete_provider_data(self, **kwargs: Any) -> dict[str, Any]:
+        """删除一个已下线 Provider 的用量、补充记录及自定义定价（不可恢复）。
+
+        请求体为 ``{"provider_id": "...", "confirm": "DELETE_PROVIDER_DATA"}``。
+        当前仍在 AstrBot 配置中的 Provider 会被拒绝，避免误删活跃数据。
+        """
+        try:
+            from quart import request
+
+            body = await request.json
+        except Exception:
+            body = None
+        if not isinstance(body, dict):
+            return self._err("请求体必须是 JSON 对象")
+        if body.get("confirm") != "DELETE_PROVIDER_DATA":
+            return self._err("缺少删除确认")
+        provider_id = str(body.get("provider_id") or "").strip()
+        if not provider_id:
+            return self._err("provider_id 不能为空")
+
+        configured_ids = {
+            str(p.get("id") or "").strip()
+            for p in self._collect_provider_models()
+            if isinstance(p, dict)
+        }
+        if provider_id in configured_ids:
+            return self._err("该 Provider 仍在当前配置中，不能作为残留数据删除")
+
+        try:
+            usage_deleted = await self.delete_usage_by_provider(provider_id)
+            supplements_deleted = await self.delete_supplements_by_provider(provider_id)
+
+            pricing_deleted = False
+            current_cfg = getattr(self, "cfg", None)
+            if isinstance(current_cfg, dict):
+                current_pricing = current_cfg.get("pricing")
+                if isinstance(current_pricing, dict) and provider_id in current_pricing:
+                    next_cfg = dict(current_cfg)
+                    next_pricing = dict(current_pricing)
+                    del next_pricing[provider_id]
+                    next_cfg["pricing"] = next_pricing
+                    data_dir = getattr(self, "_data_dir", None) or str(self.get_data_dir())
+                    save_plugin_config(data_dir, next_cfg)
+                    self.cfg = deep_merge(CONFIG_DEFAULTS, next_cfg)
+                    pricing_deleted = True
+
+            return self._ok(
+                {
+                    "provider_id": provider_id,
+                    "usage_deleted": usage_deleted,
+                    "supplements_deleted": supplements_deleted,
+                    "pricing_deleted": pricing_deleted,
+                }
+            )
+        except Exception as e:
+            return self._err(f"删除 Provider 残留数据失败：{e}")
 
     async def api_action_purge(self, **kwargs: Any) -> dict[str, Any]:
         """``POST /actions/purge``：按模块清空数据（不可恢复）。
@@ -1528,6 +1680,7 @@ class WebApiMixin:
         (:func:`coerce_to_default_type`)；``budget_overrides`` 逐条过
         :func:`normalize_budget_override`（非法整条丢弃）；``fallback_providers``
         逐条过 :func:`normalize_fallback_provider`；``pricing`` 接受任意 dict；
+        ``pricing_multipliers`` 接受供应商聚类 ID 到 0.01–100 倍率的映射；
         ``default_on_exceeded`` 限定 ``stop|fallback|warn``。未知 key 忽略。
         """
         if not isinstance(body, dict):
@@ -1573,6 +1726,10 @@ class WebApiMixin:
                     if n is not None:
                         normalized_p[pid_s] = n
                 out[k] = normalized_p
+            elif k == "pricing_multipliers":
+                if not isinstance(v, dict):
+                    return None, "pricing_multipliers 必须是对象（key=cluster_id）"
+                out[k] = normalize_pricing_multipliers(v)
             elif k == "exchange_rates":
                 # 接受任意 {货币代码: 汇率} dict，逐值转 float（可能含 API 同步的
                 # 160+ 货币，不能用非空默认 dict 的 coerce 逻辑裁剪）

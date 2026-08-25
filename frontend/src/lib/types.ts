@@ -313,14 +313,39 @@ export interface PricingUnpriced {
   count: number;
 }
 
+export interface DeletedProviderInfo {
+  provider_id: string;
+  tokens: number;
+  count: number;
+  has_pricing?: boolean;
+  models?: string[];
+  matched_default?: MatchedDefault | null;
+}
+
+export interface PricingCluster {
+  id: string;
+  name: string;
+  models: string[];
+}
+
 export interface PricingResponse {
   provider_models?: ProviderModelInfo[];
+  deleted_providers?: DeletedProviderInfo[];
   user_pricing?: Record<string, UserPricingEntry>; // key=provider_id
   defaults?: Record<string, PriceEntry>; // key=模型名，per_token
+  pricing_clusters?: PricingCluster[];
+  pricing_multipliers?: Record<string, number>; // key=cluster_id，缺省=1
   unpriced?: PricingUnpriced[];
   currency_symbol?: string;
   exchange_rates?: Record<string, number>;
   exchange_rates_updated_at?: string;
+}
+
+export interface DeleteProviderDataResult {
+  provider_id: string;
+  usage_deleted: number;
+  supplements_deleted: number;
+  pricing_deleted: boolean;
 }
 
 // ===== AI 诊断 =====

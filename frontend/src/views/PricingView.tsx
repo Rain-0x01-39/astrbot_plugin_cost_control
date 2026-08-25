@@ -4,8 +4,10 @@ import { useApi } from "../hooks/useApi";
 import { useAutoSave } from "../hooks/useAutoSave";
 import { fmtNum } from "../lib/format";
 import type {
+  DeletedProviderInfo,
   MatchedDefault,
   PriceEntry,
+  PricingCluster,
   PricingUnpriced,
   ProviderModelInfo,
   UserPricingEntry,
@@ -14,6 +16,7 @@ import { Panel } from "../components/Panel";
 import { Button } from "../components/Button";
 import { SaveToast } from "../components/SaveToast";
 import { Loading, ErrorBox } from "../components/Feedback";
+import { PricingCatalog } from "../components/PricingCatalog";
 import {
   DraftEntry,
   ProviderPricingCard,
@@ -26,6 +29,9 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
   const res = useApi(() => api.getPricing(), [refreshNonce]);
   const data = res.data;
   const [drafts, setDrafts] = useState<Record<string, DraftEntry>>({});
+  const [multiplierDrafts, setMultiplierDrafts] = useState<
+    Record<string, string>
+  >({});
   const [resetResult, setResetResult] = useState("");
   // 两段式确认：首次点击武装，4 秒内再次点击执行
   const [resetArmed, setResetArmed] = useState(false);
@@ -47,12 +53,26 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
       next[pid] = entryToDraft(entry);
     }
     setDrafts(next);
+    const nextMultipliers: Record<string, string> = {};
+    for (const [clusterId, multiplier] of Object.entries(
+      data.pricing_multipliers || {},
+    )) {
+      nextMultipliers[clusterId] = String(multiplier);
+    }
+    setMultiplierDrafts(nextMultipliers);
     setReady(true);
     setUnpricedOverride(null); // 新数据到达时清除覆盖
   }, [data]);
 
   const providerModels: ProviderModelInfo[] = data?.provider_models || [];
   const defaults: Record<string, PriceEntry> = data?.defaults || {};
+  const pricingClusters = useMemo<PricingCluster[]>(() => {
+    if (data?.pricing_clusters?.length) return data.pricing_clusters;
+    const models = Object.keys(defaults).sort();
+    return models.length
+      ? [{ id: "other", name: "全部模型", models }]
+      : [];
+  }, [data?.pricing_clusters, defaults]);
   const unpriced = unpricedOverride ?? data?.unpriced ?? [];
 
   // 当前配置中的 provider ID 集合
@@ -61,24 +81,37 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     [providerModels],
   );
 
-  // 已设过定价但不在当前配置中的「孤儿」provider
-  const orphanIds = Object.keys(drafts).filter(
-    (pid) => !configIds.has(pid),
-  );
-
-  // 从 unpriced 中提取不在当前配置中、也未在 drafts 中的「历史」provider
-  const historicalIds = useMemo(() => {
-    const seen = new Set([...configIds, ...orphanIds]);
-    const ids: string[] = [];
-    for (const u of unpriced) {
-      const pid = u.provider_id || "";
-      if (pid && !seen.has(pid)) {
-        seen.add(pid);
-        ids.push(pid);
+  // 后端返回所有「已从当前配置删除，但仍有历史用量或旧定价」的 Provider。
+  // 兼容旧后端：缺少 deleted_providers 字段时，仍从定价和未定价用量推导。
+  const deletedProviders = useMemo<DeletedProviderInfo[]>(() => {
+    if (data?.deleted_providers) return data.deleted_providers;
+    const byId = new Map<string, DeletedProviderInfo>();
+    for (const pid of Object.keys(drafts)) {
+      if (!configIds.has(pid)) {
+        byId.set(pid, {
+          provider_id: pid,
+          tokens: 0,
+          count: 0,
+          has_pricing: true,
+        });
       }
     }
-    return ids;
-  }, [unpriced, configIds, orphanIds]);
+    for (const u of unpriced) {
+      const pid = u.provider_id || "";
+      if (!pid || configIds.has(pid)) continue;
+      const item = byId.get(pid) || {
+        provider_id: pid,
+        tokens: 0,
+        count: 0,
+      };
+      item.tokens += u.tokens || 0;
+      item.count += u.count || 0;
+      byId.set(pid, item);
+    }
+    return Array.from(byId.values()).sort(
+      (a, b) => b.tokens - a.tokens || a.provider_id.localeCompare(b.provider_id),
+    );
+  }, [data?.deleted_providers, drafts, unpriced, configIds]);
 
   // 短名：取最后一个 / 后面的部分（如 newapi/image-ocr → image-ocr）
   const shortName = (id: string) => {
@@ -86,14 +119,13 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     return i >= 0 ? id.slice(i + 1) : id;
   };
 
-  // 原始显示列表（去重前）
-  const rawList: {
+  const displayList: {
     id: string;
     displayId: string;
     type?: string;
     candidates: string[];
     matchedDefault: MatchedDefault | null;
-    isHistorical?: boolean;
+    isDeletedResidue?: boolean;
   }[] = [
     ...providerModels.map((p) => ({
       id: p.id,
@@ -102,52 +134,17 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
       candidates: p.candidates,
       matchedDefault: p.matched_default ?? null,
     })),
-    ...orphanIds.map((id) => ({
-      id,
-      displayId: id,
+    ...deletedProviders.map((p) => ({
+      id: p.provider_id,
+      displayId: p.provider_id,
       type: undefined,
-      candidates: [],
-      matchedDefault: null,
-    })),
-    ...historicalIds.map((id) => ({
-      id,
-      displayId: id,
-      type: undefined,
-      candidates: [],
-      matchedDefault: null,
-      isHistorical: true,
+      candidates: p.models || [],
+      matchedDefault: p.matched_default ?? null,
+      isDeletedResidue: true,
     })),
   ];
 
-  // 去重：按短名分组，如果多个 ID 共享同一短名（如 newapi/image-ocr 和 image-ocr），
-  // 保留最长 ID（更具体），displayId 用短名，删除较短的重复项
-  const displayList = useMemo(() => {
-    const byShort = new Map<string, typeof rawList>();
-    for (const item of rawList) {
-      const sn = shortName(item.displayId);
-      const existing = byShort.get(sn);
-      if (!existing) {
-        byShort.set(sn, [item]);
-      } else {
-        existing.push(item);
-      }
-    }
-    const result: typeof rawList = [];
-    for (const [, group] of byShort) {
-      if (group.length === 1) {
-        result.push(group[0]);
-      } else {
-        // 保留最长 ID，displayId 用短名
-        group.sort((a, b) => b.id.length - a.id.length);
-        const kept = { ...group[0], displayId: shortName(group[0].displayId) };
-        result.push(kept);
-      }
-    }
-    return result;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providerModels, orphanIds, historicalIds]);
-
-  // 未定价告警按 provider_id 分组（去重后），用于可点击跳转
+  // 未定价告警按精确 provider_id 分组，用于可点击跳转
   const unpricedByProvider = useMemo(() => {
     type UGroup = { models: typeof unpriced; totalTokens: number };
     const map = new Map<string, UGroup>();
@@ -158,39 +155,22 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
       group.totalTokens += u.tokens || 0;
       map.set(pid, group);
     }
-    // 按短名合并：newapi/image-ocr 和 image-ocr 合并为一行
-    const byShort = new Map<string, UGroup & { fullId: string }>();
-    for (const [pid, group] of map) {
-      const sn = shortName(pid);
-      const existing = byShort.get(sn);
-      if (!existing) {
-        byShort.set(sn, { ...group, fullId: pid });
-      } else {
-        existing.models.push(...group.models);
-        existing.totalTokens += group.totalTokens;
-        if (pid.length > existing.fullId.length) existing.fullId = pid;
-      }
-    }
-    return Array.from(byShort.entries())
-      .map(([, g]) => [g.fullId, g] as [string, UGroup])
-      .sort((a, b) => b[1].totalTokens - a[1].totalTokens);
+    return Array.from(map.entries()).sort(
+      (a, b) => b[1].totalTokens - a[1].totalTokens,
+    );
   }, [unpriced]);
 
-  // 存在未定价用量的 provider ID 及短名集合，用于卡片背景色判定
+  // 存在未定价用量的精确 provider ID 集合，用于卡片背景色判定
   const unpricedIdSet = useMemo(() => {
     const s = new Set<string>();
     for (const u of unpriced) {
       const pid = u.provider_id || "";
-      if (pid) {
-        s.add(pid);
-        s.add(shortName(pid));
-      }
+      if (pid) s.add(pid);
     }
     return s;
   }, [unpriced]);
 
-  const hasUnpricedUsage = (pid: string) =>
-    unpricedIdSet.has(pid) || unpricedIdSet.has(shortName(pid));
+  const hasUnpricedUsage = (pid: string) => unpricedIdSet.has(pid);
 
   const updateDraft = (pid: string, patch: Partial<DraftEntry>) =>
     setDrafts((prev) => {
@@ -206,6 +186,9 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
   const ensureDraft = (pid: string): DraftEntry =>
     drafts[pid] ?? entryToDraft(undefined);
 
+  const updateMultiplier = (clusterId: string, value: string) =>
+    setMultiplierDrafts((prev) => ({ ...prev, [clusterId]: value }));
+
   const collect = (): Record<string, UserPricingEntry> => {
     const out: Record<string, UserPricingEntry> = {};
     for (const [pid, d] of Object.entries(drafts)) {
@@ -216,23 +199,50 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     return out;
   };
 
+  const collectMultipliers = (): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const [clusterId, raw] of Object.entries(multiplierDrafts)) {
+      const multiplier = Number(raw);
+      if (
+        !Number.isFinite(multiplier) ||
+        multiplier < 0.01 ||
+        multiplier > 100
+      ) {
+        throw new Error("聚类倍率必须在 0.01–100 之间");
+      }
+      if (Math.abs(multiplier - 1) > 1e-12) out[clusterId] = multiplier;
+    }
+    return out;
+  };
+
   const payload = useMemo<{
     pricing: Record<string, UserPricingEntry> | null;
+    pricing_multipliers: Record<string, number> | null;
     error?: string;
   }>(() => {
     try {
-      return { pricing: collect() };
+      return {
+        pricing: collect(),
+        pricing_multipliers: collectMultipliers(),
+      };
     } catch (e) {
-      return { pricing: null, error: e instanceof Error ? e.message : String(e) };
+      return {
+        pricing: null,
+        pricing_multipliers: null,
+        error: e instanceof Error ? e.message : String(e),
+      };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drafts]);
+  }, [drafts, multiplierDrafts]);
 
-  const { status, error } = useAutoSave(
+  const { status, error, flush } = useAutoSave(
     payload,
     async (p) => {
       if (p.error) throw new Error(p.error);
-      await api.postSaveConfig({ pricing: p.pricing });
+      await api.postSaveConfig({
+        pricing: p.pricing,
+        pricing_multipliers: p.pricing_multipliers,
+      });
       // 局部刷新未定价告警，避免整页 refetch 导致闪烁
       try {
         const fresh = await api.getPricing();
@@ -243,6 +253,17 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     },
     { enabled: ready },
   );
+
+  const deleteResidualData = async (providerId: string) => {
+    // 先落盘其它尚在防抖期内的价格修改，避免删除后刷新覆盖用户刚输入的内容。
+    if (status === "saving") {
+      throw new Error("价格配置正在保存，请稍后再试");
+    }
+    await flush();
+    await api.postDeleteProviderData(providerId);
+    setUnpricedOverride(null);
+    res.refetch();
+  };
 
   if (res.loading && !data) return <Loading />;
   if (res.error) return <ErrorBox message={`加载定价失败：${res.error}`} />;
@@ -263,7 +284,7 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     setResetArmed(false);
     setResetResult("重置中…");
     try {
-      await api.postSaveConfig({ pricing: {} });
+      await api.postSaveConfig({ pricing: {}, pricing_multipliers: {} });
       setResetResult("✅ 已重置，立即生效");
       res.refetch();
     } catch (e) {
@@ -276,8 +297,6 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     setHighlightTarget(pid);
     setHighlightSignal((s) => s + 1);
   };
-
-  const defaultKeys = Object.keys(defaults).sort();
 
   // 统计概要数字
   const totalProviders = displayList.length;
@@ -294,16 +313,18 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
           </div>
           <div className="unpriced-groups">
             {unpricedByProvider.map(([pid, group]) => {
-              const isHistorical = !configIds.has(pid) && !drafts[pid];
+              const isDeletedResidue = !configIds.has(pid);
               return (
                 <div
                   key={pid}
-                  className={`unpriced-group-row ${isHistorical ? "is-historical" : ""}`}
+                  className={`unpriced-group-row ${isDeletedResidue ? "is-deleted-residue" : ""}`}
                   onClick={() => jumpToProvider(pid)}
-                  title={isHistorical ? "该 Provider 已不在当前配置中，点击仍可设置定价" : "点击跳转到定价卡片"}
+                  title={isDeletedResidue ? "该 Provider 已从当前配置删除，点击查看残留数据" : "点击跳转到定价卡片"}
                 >
                   <span className="mono unpriced-pid">{shortName(pid) || "(未知)"}</span>
-                  {isHistorical && <span className="unpriced-historical-tag">历史</span>}
+                  {isDeletedResidue && (
+                    <span className="unpriced-residue-tag">已删除供应商残留</span>
+                  )}
                   <span className="unpriced-models">
                     {group.models.length} 个模型
                   </span>
@@ -318,9 +339,29 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
         </Panel>
       )}
 
+      {pricingClusters.length > 0 && (
+        <Panel className="pricing-catalog-panel">
+          <div className="pricing-header">
+            <h2>模型计费规则</h2>
+            <span className="muted small">
+              {Object.keys(defaults).length} 个模型 · {pricingClusters.length} 个供应商聚类
+            </span>
+          </div>
+          <div className="muted small pricing-catalog-help">
+            左侧选择供应商聚类，右侧滚动查看具体规则。规则基准来自 OpenRouter；聚类倍率会在最终成本中实时生效。
+          </div>
+          <PricingCatalog
+            clusters={pricingClusters}
+            defaults={defaults}
+            multipliers={multiplierDrafts}
+            onMultiplierChange={updateMultiplier}
+          />
+        </Panel>
+      )}
+
       <Panel>
         <div className="pricing-header">
-          <h2>Provider 定价</h2>
+          <h2>Provider 自定义定价</h2>
           <div className="pricing-header-stats">
             <span className="muted small">{totalProviders} 个 Provider</span>
             {unmatchedCount > 0 && (
@@ -334,6 +375,11 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
           按 <strong>provider_id</strong> 设置定价。未设置时按模型名匹配内置默认。
           修改后自动保存、即时热生效，告警同步更新。
         </div>
+        {deletedProviders.length > 0 && (
+          <div className="pricing-residue-help">
+            “已删除供应商残留”表示该 Provider 已不在 AstrBot 配置中；删除残留数据会永久清除其历史用量、补充记录和旧定价。
+          </div>
+        )}
         {displayList.length === 0 && (
           <div className="muted small" style={{ margin: "8px 0" }}>
             未获取到当前 AstrBot 的 provider 配置。可在 AstrBot 主配置添加 provider 后重载插件。
@@ -350,13 +396,18 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
               draft={ensureDraft(p.id)}
               matchedDefault={p.matchedDefault}
               hasUserOverride={!isDraftEmpty(ensureDraft(p.id))}
-              isHistorical={p.isHistorical}
+              isDeletedResidue={p.isDeletedResidue}
               hasUsage={hasUnpricedUsage(p.id)}
               highlightSignal={
                 highlightTarget === p.id ? highlightSignal : undefined
               }
               onChange={(patch) => updateDraft(p.id, patch)}
               onClear={() => clearDraft(p.id)}
+              onDeleteData={
+                p.isDeletedResidue
+                  ? () => deleteResidualData(p.id)
+                  : undefined
+              }
             />
           ))}
         </div>
@@ -371,42 +422,6 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
           <span className="muted">{resetResult}</span>
         </div>
       </Panel>
-
-      {defaultKeys.length > 0 && (
-        <details className="panel">
-          <summary>
-            内置默认单价（参考 OpenRouter，共 {defaultKeys.length} 个模型，per_token，只读）
-          </summary>
-          <div className="muted small" style={{ margin: "6px 0" }}>
-            随插件版本更新；按模型名模糊匹配（前缀 / 子串），作为未设置 provider 定价时的回退基准。
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>模型</th>
-                <th>输入</th>
-                <th>缓存命中</th>
-                <th>输出</th>
-                <th>缓存写入</th>
-              </tr>
-            </thead>
-            <tbody>
-              {defaultKeys.map((k) => {
-                const p = defaults[k] || {};
-                return (
-                  <tr key={k}>
-                    <td className="mono">{k}</td>
-                    <td>{p.input != null ? p.input : "-"}</td>
-                    <td>{p.input_cached != null ? p.input_cached : "-"}</td>
-                    <td>{p.output != null ? p.output : "-"}</td>
-                    <td>{p.cache_creation != null ? p.cache_creation : "-"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </details>
-      )}
 
       <SaveToast status={status} error={error} />
     </div>

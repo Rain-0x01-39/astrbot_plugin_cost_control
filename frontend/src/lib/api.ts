@@ -12,6 +12,7 @@ import type {
   BudgetResponse,
   CacheResponse,
   CompareResult,
+  DeleteProviderDataResult,
   OverviewReport,
   PricingResponse,
   Provider,
@@ -81,6 +82,11 @@ export const api = {
   postPurge: (modules: string[]) =>
     post<{ results: Record<string, number> }>("actions/purge", {
       modules,
+    }),
+  postDeleteProviderData: (providerId: string) =>
+    post<DeleteProviderDataResult>("actions/delete_provider_data", {
+      provider_id: providerId,
+      confirm: "DELETE_PROVIDER_DATA",
     }),
   postReport: () => post<{ message: string }>("actions/report"),
   postSaveConfig: (body: unknown) =>

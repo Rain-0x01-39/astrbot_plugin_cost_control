@@ -158,11 +158,12 @@ export function ProviderPricingCard({
   draft,
   matchedDefault,
   hasUserOverride,
-  isHistorical,
+  isDeletedResidue,
   hasUsage,
   highlightSignal,
   onChange,
   onClear,
+  onDeleteData,
 }: {
   providerId: string;
   displayId?: string;
@@ -171,17 +172,29 @@ export function ProviderPricingCard({
   draft: DraftEntry;
   matchedDefault?: MatchedDefault | null;
   hasUserOverride?: boolean;
-  isHistorical?: boolean;
+  isDeletedResidue?: boolean;
   /** 该 provider 是否存在未定价用量（告警） */
   hasUsage?: boolean;
   /** 外部跳转信号：每次点击未定价告警时递增，触发脉冲动画 */
   highlightSignal?: number;
   onChange: (patch: Partial<DraftEntry>) => void;
   onClear: () => void;
+  onDeleteData?: () => Promise<void>;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   // 自定义定价也默认折叠；仅未定价（无内置匹配）时默认展开以提示用户
   const [expanded, setExpanded] = useState<boolean>(!matchedDefault);
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const deleteArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (deleteArmTimer.current) clearTimeout(deleteArmTimer.current);
+    },
+    [],
+  );
 
   // 外部跳转信号 → 滚动到视图 + 触发脉冲动画
   useEffect(() => {
@@ -220,9 +233,30 @@ export function ProviderPricingCard({
   // 未定价 = 无自定义定价且无内置匹配
   const isUnpriced = !hasUserOverride && !matchedDefault;
 
+  const deleteResidueData = async () => {
+    if (!onDeleteData || deleting) return;
+    if (!deleteArmed) {
+      setDeleteArmed(true);
+      setDeleteError("");
+      if (deleteArmTimer.current) clearTimeout(deleteArmTimer.current);
+      deleteArmTimer.current = setTimeout(() => setDeleteArmed(false), 4000);
+      return;
+    }
+    if (deleteArmTimer.current) clearTimeout(deleteArmTimer.current);
+    setDeleteArmed(false);
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await onDeleteData();
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+      setDeleting(false);
+    }
+  };
+
   const cardClass = [
     "pricing-card",
-    isHistorical ? "is-historical" : "",
+    isDeletedResidue ? "is-deleted-residue" : "",
     !expanded ? "is-collapsed" : "",
     isUnpriced && hasUsage ? "is-unpriced-alert" : "",
     isUnpriced && !hasUsage ? "is-unpriced-warn" : "",
@@ -239,9 +273,12 @@ export function ProviderPricingCard({
       >
         <div className="pricing-id-wrap">
           <span className="mono pricing-id">{displayId || providerId}</span>
-          {isHistorical && (
-            <span className="pricing-tag-historical" title="该 Provider 已不在当前配置中，但仍有用量记录">
-              历史
+          {isDeletedResidue && (
+            <span
+              className="pricing-tag-residue"
+              title="该 Provider 已从当前配置删除，此处仅保留历史用量或旧定价"
+            >
+              已删除供应商残留
             </span>
           )}
           {type && <span className="muted small">{type}</span>}
@@ -257,6 +294,24 @@ export function ProviderPricingCard({
           className="pricing-head-right"
           style={{ display: "flex", alignItems: "center", gap: 8 }}
         >
+          {isDeletedResidue && onDeleteData && (
+            <button
+              type="button"
+              className={`pricing-delete-residue ${deleteArmed ? "is-armed" : ""}`}
+              disabled={deleting}
+              onClick={(e) => {
+                e.stopPropagation();
+                void deleteResidueData();
+              }}
+              title="永久删除该 Provider 的历史用量、补充记录和旧定价"
+            >
+              {deleting
+                ? "删除中…"
+                : deleteArmed
+                  ? "⚠ 确认删除"
+                  : "删除残留数据"}
+            </button>
+          )}
           {!expanded && (
             <span className="pricing-collapsed-summary">
               {collapsedSummary(draft, matchedDefault ?? null, !!hasUserOverride)}
@@ -321,6 +376,10 @@ export function ProviderPricingCard({
           )}
         </div>
       </div>
+
+      {deleteError && (
+        <div className="pricing-delete-error">删除失败：{deleteError}</div>
+      )}
 
       {expanded && (
         <>

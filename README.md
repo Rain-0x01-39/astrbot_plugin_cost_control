@@ -55,7 +55,7 @@ WebUI 内嵌 7 个页面,配置改动**自动保存、热生效**,无需重载�
 | **预算** | 5 维 token + 花费双限额、局部阈值、备用 Provider 库、全局默认处理动作 |
 | **缓存** | 命中率趋势、4 类破坏诊断事件、system/tools 差异 diff |
 | **上下文** | 每轮请求的 system / tools / history / user 注入量分解 |
-| **定价** | 内置模型表浏览 + 自定义 provider 单价(per_token/per_turn/per_request) |
+| **定价** | 按供应商聚类浏览模型规则、设置聚类倍率 + 自定义 provider 单价(per_token/per_turn/per_request) |
 | **设置** | 功能开关、刷新时刻、缓存告警阈值、定时日报、归因采样率等 |
 
 ---
@@ -166,6 +166,7 @@ WebUI 内嵌 7 个页面,配置改动**自动保存、热生效**,无需重载�
 | `default_on_exceeded` | `"stop"` | 全局默认超限处理 |
 | `refresh_time` | `"00:00"` | 每日预算重置时刻(本地时区) |
 | `pricing` | `{}` | 自定义 provider 单价(覆盖内置表) |
+| `pricing_multipliers` | `{}` | 模型供应商聚类倍率(0.01–100,缺省 1 倍) |
 | `cache_diag` | 见下 | 缓存诊断开关与告警阈值 |
 | `alerts` | 见下 | 告警推送、冷却、日报 |
 | `prompt_optimizer` | 见下 | prompt 优化器 |
