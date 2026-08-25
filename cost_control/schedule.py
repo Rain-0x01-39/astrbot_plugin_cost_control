@@ -21,8 +21,9 @@ from typing import Any
 from astrbot import logger
 
 from .budget import day_window_start, month_window_start, resolve_tz
-from .config import get_config, get_pricing
-from .cost import compute_cost_grouped
+from .config import get_config, get_pricing, get_rates
+from .cost import compute_cost_grouped_in_main
+from .exchange_rates import currency_to_symbol, get_main_currency
 
 REPORT_JOB_NAME = "cost_control_daily_report"
 CLEANUP_JOB_NAME = "cost_control_cleanup"
@@ -123,13 +124,14 @@ class ScheduleMixin:
             day_cost = await self._grouped_cost(start=d_start)
             month_cost = await self._grouped_cost(start=m_start)
 
+            sym = currency_to_symbol(get_main_currency(getattr(self, "cfg", None)))
             text = (
                 "📊 成本日报\n"
-                f"今日：{day_usage.get('count', 0)} 次调用，成本 ≈ ${day_cost:.4f}\n"
+                f"今日：{day_usage.get('count', 0)} 次调用，成本 ≈ {sym}{day_cost:.4f}\n"
                 f"  输入(非缓存) {day_usage.get('token_input_other', 0)} / "
                 f"缓存命中 {day_usage.get('token_input_cached', 0)} / "
                 f"输出 {day_usage.get('token_output', 0)}\n"
-                f"本月：{month_usage.get('count', 0)} 次调用，成本 ≈ ${month_cost:.4f}"
+                f"本月：{month_usage.get('count', 0)} 次调用，成本 ≈ {sym}{month_cost:.4f}"
             )
 
             alerts = get_config(getattr(self, "cfg", None), "alerts", {}) or {}
@@ -154,10 +156,11 @@ class ScheduleMixin:
             logger.warning("[cost_control] 历史清理失败: %s", e)
 
     async def _grouped_cost(self, *, start: datetime) -> float:
-        """按 (provider,model) 分组聚合用量并求和成本（无定价的行计 0）。"""
+        """按 (provider,model) 分组聚合用量并求和成本，换算到主货币（无定价的行计 0）。"""
         try:
             rows = await self.query_usage_grouped(by="provider_model", start=start)
-            pricing = get_pricing(getattr(self, "cfg", None))
-            return compute_cost_grouped(rows, pricing)
+            cfg = getattr(self, "cfg", None)
+            pricing = get_pricing(cfg)
+            return compute_cost_grouped_in_main(rows, pricing, get_main_currency(cfg), get_rates(cfg))
         except Exception:
             return 0.0
