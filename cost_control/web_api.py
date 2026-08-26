@@ -295,7 +295,7 @@ class WebApiMixin:
         从固化的原始货币换算到主货币 ``main_cur``，``cost_original`` 保留原始金额；
         否则 ``cost`` 由 pricing 即时算出（回退，用于历史未回填行）。
         """
-        from .cost import compute_cost_value
+        from .cost import compute_cost_in_main
         from .exchange_rates import convert
 
         created = getattr(s, "created_at", None)
@@ -315,9 +315,9 @@ class WebApiMixin:
             cur = str(currency_symbol or "USD")
             cost = round(convert(cost_original, cur, main_cur, rates or {}), 6)
         elif pricing is not None:
-            # 回退：无固化金额，按定价即时算（USD 口径）
+            # 回退：无固化金额，按定价即时算并换算到主货币
             cost = round(
-                compute_cost_value(
+                compute_cost_in_main(
                     {
                         "token_input_other": token_input_other,
                         "token_input_cached": token_input_cached,
@@ -327,6 +327,8 @@ class WebApiMixin:
                     getattr(s, "provider_id", None) or None,
                     getattr(s, "provider_model", None),
                     pricing,
+                    main_cur,
+                    rates or {},
                 ),
                 6,
             )
@@ -1105,6 +1107,7 @@ class WebApiMixin:
                 def _ratio(used: float, limit: Any) -> dict[str, Any]:
                     limit_f = float(limit or 0)
                     return {
+                        "limit": round(limit_f, 6),
                         "used": round(used, 6),
                         "ratio": round(used * 100.0 / limit_f, 1) if limit_f > 0 else 0.0,
                         "exceeded": limit_f > 0 and used >= limit_f,
