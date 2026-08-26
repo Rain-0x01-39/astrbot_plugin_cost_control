@@ -152,7 +152,6 @@ function collapsedSummary(
 
 export function ProviderPricingCard({
   providerId,
-  displayId,
   type,
   candidates,
   draft,
@@ -166,7 +165,6 @@ export function ProviderPricingCard({
   onDeleteData,
 }: {
   providerId: string;
-  displayId?: string;
   type?: string;
   candidates: string[];
   draft: DraftEntry;
@@ -272,12 +270,7 @@ export function ProviderPricingCard({
         style={!expanded ? { cursor: "pointer" } : undefined}
       >
         <div className="pricing-id-wrap">
-          <span className="mono pricing-id">{displayId || providerId}</span>
-          {displayId && displayId !== providerId && (
-            <span className="mono pricing-provider-source-id" title="Provider ID">
-              {providerId}
-            </span>
-          )}
+          <span className="mono pricing-id">{providerId}</span>
           {isDeletedResidue && (
             <span
               className="pricing-tag-residue"

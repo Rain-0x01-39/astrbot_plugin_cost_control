@@ -26,7 +26,6 @@ import {
 
 interface PricingDisplayProvider {
   id: string;
-  displayId: string;
   type?: string;
   candidates: string[];
   matchedDefault: MatchedDefault | null;
@@ -130,7 +129,6 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     () =>
       providerModels.map((p) => ({
         id: p.id,
-        displayId: p.model || p.id,
         type: p.type,
         candidates: p.candidates,
         matchedDefault: p.matched_default ?? null,
@@ -142,7 +140,6 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     () =>
       deletedProviders.map((p) => ({
         id: p.provider_id,
-        displayId: p.provider_id,
         type: undefined,
         candidates: p.models || [],
         matchedDefault: p.matched_default ?? null,
@@ -360,7 +357,6 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     <ProviderPricingCard
       key={p.id}
       providerId={p.id}
-      displayId={p.displayId}
       type={p.type}
       candidates={p.candidates}
       draft={ensureDraft(p.id)}
