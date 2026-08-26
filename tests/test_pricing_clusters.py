@@ -78,9 +78,7 @@ def test_collect_provider_models_uses_astrbot_provider_sources():
     api = WebApiMixin()
     api.context = SimpleNamespace(
         get_config=lambda: {
-            "provider_sources": [
-                {"id": "openai-main", "name": "OpenAI 主账号", "type": "openai"}
-            ],
+            "provider_sources": [{"id": "openai-main", "name": "OpenAI 主账号", "type": "openai"}],
             "provider": [
                 {
                     "id": "gpt-primary",

@@ -66,19 +66,19 @@ def test_match_pricing_longest_wins():
 
 def test_match_pricing_vendor_prefix():
     # OpenRouter / NewAPI 风格：厂商前缀 + 大小写混合
-    assert match_pricing("minimax/MiniMax-M2.7", DEFAULT_PRICING)["input"] == 0.25
-    assert match_pricing("deepseek/deepseek-v4-pro", DEFAULT_PRICING)["input"] == 0.435
+    assert match_pricing("minimax/MiniMax-M2.7", DEFAULT_PRICING)["input"] == 0.3
+    assert match_pricing("deepseek/deepseek-v4-pro", DEFAULT_PRICING)["input"] == 0.572808
 
 
 def test_match_pricing_nested_namespace():
     # 多层命名空间前缀：剥到最后一段
-    assert match_pricing("newapi/moonshotai/kimi-k2.6", DEFAULT_PRICING)["input"] == 0.66
+    assert match_pricing("newapi/moonshotai/kimi-k2.6", DEFAULT_PRICING)["input"] == 0.95
 
 
 def test_match_pricing_underscore_and_space():
     # 下划线 / 空格分隔统一为连字符
-    assert match_pricing("MiniMax_M2.7", DEFAULT_PRICING)["input"] == 0.25
-    assert match_pricing("MiniMax M2.7", DEFAULT_PRICING)["input"] == 0.25
+    assert match_pricing("MiniMax_M2.7", DEFAULT_PRICING)["input"] == 0.3
+    assert match_pricing("MiniMax M2.7", DEFAULT_PRICING)["input"] == 0.3
 
 
 def test_match_pricing_version_dot_alignment():

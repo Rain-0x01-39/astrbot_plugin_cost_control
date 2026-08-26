@@ -88,7 +88,9 @@ class CommandsMixin:
             main_cur = get_main_currency(getattr(self, "cfg", None))
             rates = get_rates(getattr(self, "cfg", None))
             sym = currency_to_symbol(main_cur)
-            cost = round(sum(compute_row_cost_in_main(r, pricing, main_cur, rates) for r in rows), 6)
+            cost = round(
+                sum(compute_row_cost_in_main(r, pricing, main_cur, rates) for r in rows), 6
+            )
             lines = [
                 "💰 今日用量（本会话）",
                 f"调用 {usage.get('count', 0)} 次，成本 ≈ {sym}{cost:.4f}",

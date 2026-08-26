@@ -172,9 +172,7 @@ def _apply_cluster_multiplier(
 ) -> dict[str, Any]:
     """按 AstrBot Provider Source 聚类倍率调整规则副本，不修改基础价格。"""
     multipliers = pricing.get("multipliers") if isinstance(pricing, dict) else None
-    provider_clusters = (
-        pricing.get("provider_clusters") if isinstance(pricing, dict) else None
-    )
+    provider_clusters = pricing.get("provider_clusters") if isinstance(pricing, dict) else None
     if (
         not provider_id
         or not isinstance(multipliers, dict)

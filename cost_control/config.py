@@ -260,9 +260,7 @@ def get_pricing(config: dict[str, Any] | None) -> dict[str, Any]:
             norm = _normalize_user_entry(entry)
             if norm is not None:
                 user[str(pid)] = norm
-    multipliers = normalize_pricing_multipliers(
-        get_config(config, "pricing_multipliers", {}) or {}
-    )
+    multipliers = normalize_pricing_multipliers(get_config(config, "pricing_multipliers", {}) or {})
     return {"defaults": defaults, "user": user, "multipliers": multipliers}
 
 
@@ -342,9 +340,7 @@ def _to_float_or_zero(v: Any) -> float:
 # schema 仅保留总开关 enabled，其余所有参数走插件自有 config.json；
 # 故此处只同步 enabled（由 AstrBot 持久化到 <plugin>_config.json，
 # 供 WebUI 插件配置页显示）。
-SWITCH_KEYS: tuple[tuple[str | int, ...], ...] = (
-    ("enabled",),
-)
+SWITCH_KEYS: tuple[tuple[str | int, ...], ...] = (("enabled",),)
 
 
 def deep_merge(base: Any, *overrides: Any) -> Any:

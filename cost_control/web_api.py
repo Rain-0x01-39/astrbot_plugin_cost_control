@@ -740,8 +740,7 @@ class WebApiMixin:
                     c = compute_row_cost_in_main(mr, pricing, _mc, _rt)
                     bucket_cost[bk] = bucket_cost.get(bk, 0.0) + c
                 cost_series = [
-                    {"bucket": bk, "cost": round(v, 6)}
-                    for bk, v in sorted(bucket_cost.items())
+                    {"bucket": bk, "cost": round(v, 6)} for bk, v in sorted(bucket_cost.items())
                 ]
             except Exception:
                 pass
@@ -999,9 +998,7 @@ class WebApiMixin:
                     else 0.0
                 )
                 mod_cost = (
-                    round(
-                        compute_row_cost_in_main(top_model[0], pricing, main_cur, rates), 6
-                    )
+                    round(compute_row_cost_in_main(top_model[0], pricing, main_cur, rates), 6)
                     if top_model
                     else 0.0
                 )
@@ -1497,9 +1494,7 @@ class WebApiMixin:
                         + int(r.get("token_output", 0) or 0)
                     )
                     if provider_id:
-                        agg = usage_by_provider.setdefault(
-                            provider_id, {"tokens": 0, "count": 0}
-                        )
+                        agg = usage_by_provider.setdefault(provider_id, {"tokens": 0, "count": 0})
                         agg["tokens"] += tokens
                         agg["count"] += int(r.get("count", 0) or 0)
                     if model and resolve_pricing(provider_id or None, model, pricing) is None:
