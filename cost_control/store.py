@@ -488,9 +488,9 @@ class StoreMixin:
     async def backfill_cost_amounts(self, pricing: dict[str, Any]) -> int:
         """一次性回填 ``cost_amount IS NULL`` 的存量记录（幂等）。
 
-        逐行按 ``(provider_id, provider_model)`` 解析定价规则（历史定价无 currency
-        字段，按 USD 口径算），把 USD 金额固化为 ``cost_amount``、
-        ``currency_symbol="USD"``。失败行跳过（保持 NULL，展示时按主货币回退重算）。
+        逐行按 ``(provider_id, provider_model)`` 解析定价规则，把**原始计费货币**
+        金额固化为 ``cost_amount``、``currency_symbol``（定价条目 ``currency`` 字段，
+        缺省 ``"USD"``）。失败行跳过（保持 NULL，展示时按主货币回退重算）。
         已有值的行不动。
 
         Args:
@@ -500,7 +500,7 @@ class StoreMixin:
             成功回填的行数（失败返回 0）。
         """
         try:
-            from .cost import compute_cost_value
+            from .cost import compute_cost_with_currency
 
             maker = await self._ensure_session_maker()
             async with maker() as session:
@@ -517,17 +517,14 @@ class StoreMixin:
                             "token_output": int(getattr(r, "token_output", 0) or 0),
                             "cache_creation": getattr(r, "cache_creation", None),
                         }
-                        cost_usd = round(
-                            compute_cost_value(
-                                usage,
-                                getattr(r, "provider_id", "") or None,
-                                getattr(r, "provider_model", None),
-                                pricing,
-                            ),
-                            6,
+                        raw, cur = compute_cost_with_currency(
+                            usage,
+                            getattr(r, "provider_id", "") or None,
+                            getattr(r, "provider_model", None),
+                            pricing,
                         )
-                        r.cost_amount = cost_usd  # type: ignore[assignment]
-                        r.currency_symbol = "USD"  # type: ignore[assignment]
+                        r.cost_amount = round(raw, 6)  # type: ignore[assignment]
+                        r.currency_symbol = cur or "USD"  # type: ignore[assignment]
                         n += 1
                     except Exception:
                         continue
