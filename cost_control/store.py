@@ -327,19 +327,24 @@ class StoreMixin:
         user_id: str,
         start: datetime,
         pricing: dict[str, Any],
+        main_cur: str = "USD",
+        rates: dict[str, float] | None = None,
     ) -> float:
-        """按 user_id 聚合自 ``start`` 以来的花费（supplement 路径，精确含 per_request）。
+        """按 user_id 聚合自 ``start`` 以来的花费，换算到 ``main_cur``（主货币口径）。
 
-        逐行按 (provider_id, model) 解析定价规则：
+        逐行按 (provider_id, model) 解析定价规则，取**原始计费货币**金额后经汇率
+        换算到 ``main_cur`` 累加：
 
-        - per_token / per_turn：逐行算后求和。
+        - per_token / per_turn：逐行算后换算求和。
         - per_request：按 provider 聚合 distinct ``request_id`` 数 × price（**精确**，
-          supplement 表有 request_id；主表路径无此字段只能近似）。request_id 为 NULL
-          的行无法归属，跳过。
+          supplement 表有 request_id；主表路径无此字段只能近似），再换算到主货币。
+          request_id 为 NULL 的行无法归属，跳过。
         """
         try:
-            from .cost import _cost_per_token, resolve_pricing
+            from .cost import compute_cost_with_currency, resolve_pricing
+            from .exchange_rates import convert as _convert
 
+            _rates = rates if rates else {}
             maker = await self._ensure_session_maker()
             async with maker() as session:
                 stmt = select(CostSupplement).where(CostSupplement.user_id == user_id)
@@ -349,8 +354,8 @@ class StoreMixin:
                 rows = list(result.scalars().all())
 
             total = 0.0
-            # per_request：按 provider 聚合 distinct request_id（精确）
-            req_prices: dict[str, float] = {}
+            # per_request：按 provider 聚合 (price, 货币代码)
+            req_prices: dict[str, tuple[float, str]] = {}
             for r in rows:
                 try:
                     provider_id = getattr(r, "provider_id", "") or None
@@ -358,26 +363,31 @@ class StoreMixin:
                     rule = resolve_pricing(provider_id, model, pricing)
                     if rule is None:
                         continue
+                    cur = str(rule.get("currency", "USD") or "USD").strip().upper() or "USD"
                     mode = rule.get("mode", "per_token")
                     if mode == "per_token":
-                        total += _cost_per_token(
+                        raw, _cur = compute_cost_with_currency(
                             {
                                 "token_input_other": int(getattr(r, "token_input_other", 0) or 0),
                                 "token_input_cached": int(getattr(r, "token_input_cached", 0) or 0),
                                 "token_output": int(getattr(r, "token_output", 0) or 0),
                                 "cache_creation": getattr(r, "cache_creation", None),
                             },
-                            rule,
+                            provider_id,
+                            model,
+                            pricing,
                         )
+                        total += _convert(raw, _cur, main_cur, _rates)
                     elif mode == "per_turn":
-                        total += float(rule.get("price", 0.0) or 0.0)
+                        raw = float(rule.get("price", 0.0) or 0.0)
+                        total += _convert(raw, cur, main_cur, _rates)
                     elif mode == "per_request":
                         pid = provider_id or ""
-                        req_prices[pid] = float(rule.get("price", 0.0) or 0.0)
+                        req_prices[pid] = (float(rule.get("price", 0.0) or 0.0), cur)
                 except Exception:
                     continue
 
-            # per_request 精确：每个 provider 的 distinct request_id 数 × price
+            # per_request 精确：每个 provider 的 distinct request_id 数 × price，再换算到主货币
             if req_prices:
                 distinct: dict[str, set[str]] = {}
                 for r in rows:
@@ -387,8 +397,9 @@ class StoreMixin:
                     rid = getattr(r, "request_id", None)
                     if rid:
                         distinct.setdefault(pid, set()).add(str(rid))
-                for pid, price in req_prices.items():
-                    total += len(distinct.get(pid, set())) * price
+                for pid, (price, cur) in req_prices.items():
+                    cnt = len(distinct.get(pid, set()))
+                    total += _convert(cnt * price, cur, main_cur, _rates)
             return round(total, 6)
         except Exception as e:
             logger.warning("[cost_control] query_user_cost_total 失败: %s", e)

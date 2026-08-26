@@ -1080,9 +1080,12 @@ class WebApiMixin:
                         if ov.get("token_limit", 0) > 0 and hasattr(self, "query_user_token_total"):
                             used_t_v = float(await self.query_user_token_total(tv, d_start))
                         if ov.get("cost_limit", 0) > 0 and hasattr(self, "query_user_cost_total"):
-                            # query_user_cost_total 返回 USD 口径，换算到主货币
-                            _uc = float(await self.query_user_cost_total(tv, d_start, pricing))
-                            used_c_v = round(_conv(_uc, "USD", main_cur, rates), 6)
+                            used_c_v = round(
+                                await self.query_user_cost_total(
+                                    tv, d_start, pricing, main_cur, rates
+                                ),
+                                6,
+                            )
                 except Exception:
                     # 单条 override 聚合失败不影响其它条
                     pass
