@@ -22,6 +22,7 @@ import {
   draftToEntry,
   entryToDraft,
   isDraftEmpty,
+  normalizeDefaultCurrency,
 } from "../components/ProviderPricingCard";
 
 interface PricingDisplayProvider {
@@ -53,12 +54,15 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     PricingUnpriced[] | null
   >(null);
 
+  // 新建草稿的默认计价货币：跟随主货币（后端 /pricing 已返回 currency_symbol）
+  const defaultCurrency = normalizeDefaultCurrency(data?.currency_symbol);
+
   useEffect(() => {
     if (!data) return;
     const next: Record<string, DraftEntry> = {};
     const userPricing = data.user_pricing || {};
     for (const [pid, entry] of Object.entries(userPricing)) {
-      next[pid] = entryToDraft(entry);
+      next[pid] = entryToDraft(entry, defaultCurrency);
     }
     setDrafts(next);
     const nextMultipliers: Record<string, string> = {};
@@ -76,7 +80,7 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
     setMultiplierDrafts(nextMultipliers);
     setReady(true);
     setUnpricedOverride(null); // 新数据到达时清除覆盖
-  }, [data]);
+  }, [data, defaultCurrency]);
 
   const providerModels: ProviderModelInfo[] = data?.provider_models || [];
   const unpriced = unpricedOverride ?? data?.unpriced ?? [];
@@ -221,7 +225,7 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
 
   const updateDraft = (pid: string, patch: Partial<DraftEntry>) =>
     setDrafts((prev) => {
-      const cur = prev[pid] ?? entryToDraft(undefined);
+      const cur = prev[pid] ?? entryToDraft(undefined, defaultCurrency);
       return { ...prev, [pid]: { ...cur, ...patch } };
     });
   const clearDraft = (pid: string) =>
@@ -231,7 +235,7 @@ export function PricingView({ refreshNonce }: { refreshNonce: number }) {
       return next;
     });
   const ensureDraft = (pid: string): DraftEntry =>
-    drafts[pid] ?? entryToDraft(undefined);
+    drafts[pid] ?? entryToDraft(undefined, defaultCurrency);
 
   const updateMultiplier = (clusterId: string, value: string) =>
     setMultiplierDrafts((prev) => ({ ...prev, [clusterId]: value }));
