@@ -13,6 +13,7 @@ import { CURRENCY_OPTIONS, currencyToSymbol } from "../lib/format";
 
 // 编辑中的临时态：mode + 该 mode 下所有可能字段（字符串形式便于空值处理）。
 // currency: "" = USD（内部定价 USD 基准）；其它代码表示该 provider 以该货币计价，结算时换算到主货币。
+// 新建草稿时 currency 默认跟随主货币（defaultCurrency 参数）。
 export interface DraftEntry {
   mode: PricingMode;
   input: string;
@@ -30,7 +31,17 @@ const TOKEN_FIELDS: { key: keyof DraftEntry; label: string }[] = [
   { key: "cache_creation", label: "缓存写入" },
 ];
 
-export function entryToDraft(entry?: UserPricingEntry): DraftEntry {
+// 新建草稿的默认计价货币：跟随主货币；USD 归一为 ""（内部基准，不落库 currency 字段），
+// 不在受支持列表的代码（如手工配置的异常值）回退 ""，避免下拉框出现无法命中的值。
+export function normalizeDefaultCurrency(code?: string | null): string {
+  const c = String(code || "").trim().toUpperCase();
+  return c && c !== "USD" && CURRENCY_OPTIONS.includes(c) ? c : "";
+}
+
+export function entryToDraft(
+  entry?: UserPricingEntry,
+  defaultCurrency?: string,
+): DraftEntry {
   const d: DraftEntry = {
     mode: entry?.mode ?? "per_token",
     input: "",
@@ -38,7 +49,8 @@ export function entryToDraft(entry?: UserPricingEntry): DraftEntry {
     output: "",
     cache_creation: "",
     price: "",
-    currency: entry?.currency ?? "",
+    // 已保存条目：currency 缺省即 USD 基准价，保持 USD 展示，不能改按主货币解释
+    currency: entry ? (entry.currency ?? "") : normalizeDefaultCurrency(defaultCurrency),
   };
   if (!entry) return d;
   if (entry.mode === "per_token") {
@@ -152,7 +164,6 @@ function collapsedSummary(
 
 export function ProviderPricingCard({
   providerId,
-  displayId,
   type,
   candidates,
   draft,
@@ -166,7 +177,6 @@ export function ProviderPricingCard({
   onDeleteData,
 }: {
   providerId: string;
-  displayId?: string;
   type?: string;
   candidates: string[];
   draft: DraftEntry;
@@ -272,12 +282,7 @@ export function ProviderPricingCard({
         style={!expanded ? { cursor: "pointer" } : undefined}
       >
         <div className="pricing-id-wrap">
-          <span className="mono pricing-id">{displayId || providerId}</span>
-          {displayId && displayId !== providerId && (
-            <span className="mono pricing-provider-source-id" title="Provider ID">
-              {providerId}
-            </span>
-          )}
+          <span className="mono pricing-id">{providerId}</span>
           {isDeletedResidue && (
             <span
               className="pricing-tag-residue"

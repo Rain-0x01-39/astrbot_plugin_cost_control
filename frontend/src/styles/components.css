@@ -1007,12 +1007,6 @@ tr:hover td {
   font-weight: 600;
 }
 
-.pricing-provider-source-id {
-  color: var(--text-dim);
-  font-size: 10px;
-  font-weight: 400;
-}
-
 .pricing-candidates {
   display: flex;
   flex-wrap: wrap;
