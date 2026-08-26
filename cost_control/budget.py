@@ -502,7 +502,7 @@ class BudgetMixin:
                                 "metric": "cost",
                                 "limit": lc_main,
                                 "used": used_c,
-                                "currency": ov_cur,
+                                "currency": main_cur,
                                 "on_exceeded": str(ov.get("on_exceeded") or "stop"),
                                 "fallback_provider_ids": list(
                                     ov.get("fallback_provider_ids") or []
