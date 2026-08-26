@@ -545,6 +545,54 @@ class StoreMixin:
             logger.warning("[cost_control] backfill_cost_amounts 失败: %s", e)
             return 0
 
+    async def fix_mislabeled_cost_currency(self, pricing: dict[str, Any]) -> int:
+        """一次性迁移：修正旧版 backfill 误标 USD 的历史行（幂等）。
+
+        旧版 ``backfill_cost_amounts`` 用 :func:`compute_cost_value` 固化的金额是
+        **原始计费货币**，却一律标 ``currency_symbol="USD"``。本迁移只修正
+        ``currency_symbol`` 为定价条目的实际货币，**不动** ``cost_amount``（保持
+        历史快照）。仅处理 ``cost_amount IS NOT NULL AND currency_symbol == "USD"``
+        的行，避免覆盖已正确固化的数据。
+
+        Args:
+            pricing: :func:`get_pricing` 返回的 ``{"defaults", "user"}`` 结构。
+
+        Returns:
+            修正货币标记的行数（失败返回 0）。
+        """
+        try:
+            from .cost import resolve_pricing
+
+            maker = await self._ensure_session_maker()
+            async with maker() as session:
+                stmt = select(CostSupplement).where(
+                    CostSupplement.cost_amount.is_not(None),  # type: ignore[union-attr]
+                    CostSupplement.currency_symbol == "USD",  # type: ignore[union-attr]
+                )
+                result = await session.execute(stmt)
+                rows = list(result.scalars().all())
+                n = 0
+                for r in rows:
+                    try:
+                        rule = resolve_pricing(
+                            getattr(r, "provider_id", "") or None,
+                            getattr(r, "provider_model", None),
+                            pricing,
+                        )
+                        if rule is None:
+                            continue
+                        cur = str(rule.get("currency", "USD") or "USD").strip().upper() or "USD"
+                        if cur != "USD":
+                            r.currency_symbol = cur  # type: ignore[assignment]
+                            n += 1
+                    except Exception:
+                        continue
+                await session.commit()
+                return n
+        except Exception as e:
+            logger.warning("[cost_control] fix_mislabeled_cost_currency 失败: %s", e)
+            return 0
+
     async def save_cache_event(self, record: dict[str, Any]) -> None:
         """保存一条缓存诊断事件（``run_cache_diag`` 检测到破坏时调用）。"""
         row = CacheEvent(
